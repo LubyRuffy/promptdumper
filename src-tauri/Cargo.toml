@@ -1,0 +1,47 @@
+[package]
+name = "promptdumper"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["lubyruffy"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "promptdumper_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+# 优化等级 's' 或 'z' 都是为了尺寸优化。's' 是标准推荐，'z' 更激进，可以都试试看哪个效果更好
+opt-level = "s"
+# 开启链接时优化（Link-Time Optimization），这对于减小体积至关重要
+lto = true
+# 减少代码生成单元，让 LTO 可以进行更全面的跨模块优化，但会显著增加编译时间
+codegen-units = 1
+# 遇到 panic 时直接终止程序，而不是展开堆栈。这可以移除一部分用于错误处理的“清理”代码
+panic = "abort"
+# 从二进制文件中剥离所有符号信息，而不仅仅是调试信息
+strip = true
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pcap = "2.3"
+etherparse = "0.19"
+httparse = "1"
+once_cell = "1"
+dashmap = "6"
+thiserror = "1"
+time = { version = "0.3", features = ["macros", "formatting", "parsing"] }
+rand = "0.8"
+base64 = "0.22"
+regex = "1"
+

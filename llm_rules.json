@@ -1,0 +1,34 @@
+{
+  "rules": [
+    {
+      "provider": "openai_compatible",
+      "provider_by_port": { "1234": "lmstudio", "11434": "openai" },
+      "request": {
+        "methods": ["POST"],
+        "path_regex": "^/v1/(chat/completions|completions)",
+        "headers": [
+          { "name_regex": "^content-type$", "value_regex": "application/json" }
+        ],
+        "body_contains_any": ["\"model\"", "\"messages\"", "\"prompt\""]
+      },
+      "response": {
+        "body_contains_any": ["\"choices\""]
+      }
+    },
+    {
+      "provider": "ollama",
+      "request": {
+        "methods": ["POST"],
+        "path_regex": "^/api/(generate|chat)",
+        "headers": [
+          { "name_regex": "^content-type$", "value_regex": "application/json|text/event-stream" }
+        ]
+      },
+      "response": {
+        "body_contains_any": ["\"response\"", "\"message\"", "\"model\"", "\"choices\""]
+      }
+    }
+  ]
+}
+
+
