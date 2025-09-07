@@ -354,10 +354,6 @@ fn gen_id() -> String {
         .collect()
 }
 
-fn parse_ip(ip: IpAddr) -> String {
-    ip.to_string()
-}
-
 pub fn list_network_interfaces() -> Result<Vec<NetworkInterfaceInfo>, CaptureError> {
     let devices = Device::list().map_err(|e| CaptureError::Pcap(e.to_string()))?;
     Ok(devices

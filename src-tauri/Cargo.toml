@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["lubyruffy"]
 edition = "2024"
+repository = "https://github.com/LubyRuffy/promptdumper"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -29,6 +30,11 @@ panic = "abort"
 # 从二进制文件中剥离所有符号信息，而不仅仅是调试信息
 strip = true
 
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -44,4 +50,3 @@ time = { version = "0.3", features = ["macros", "formatting", "parsing"] }
 rand = "0.8"
 base64 = "0.22"
 regex = "1"
-
