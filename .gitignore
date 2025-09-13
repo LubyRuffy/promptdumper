@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+sdk/Npcap_Guide.html
+sdk/Include/
+sdk/Lib/
+sdk/docs/
+sdk/Examples-pcap/
+sdk/Examples-remote/

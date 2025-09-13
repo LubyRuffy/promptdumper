@@ -472,6 +472,10 @@ fn parse_http_request(buf: &[u8]) -> Option<(usize, HttpRequestEvent)> {
         headers_vec.push(Header { name, value });
     }
     let body_start = header_len;
+    // If Content-Length is present and body is incomplete, wait for more bytes
+    if content_length > 0 && buf.len() < body_start + content_length {
+        return None;
+    }
     let body_end = (body_start + content_length).min(buf.len());
     let body_slice = &buf[body_start..body_end];
     let body_b64 = if !body_slice.is_empty() {
@@ -536,6 +540,10 @@ fn parse_http_response(buf: &[u8]) -> Option<(usize, HttpResponseEvent)> {
         headers_vec.push(Header { name, value });
     }
     let body_start = header_len;
+    // If Content-Length is present and body is incomplete, wait for more bytes
+    if content_length > 0 && buf.len() < body_start + content_length {
+        return None;
+    }
     let body_end = (body_start + content_length).min(buf.len());
     let body_slice = &buf[body_start..body_end];
     let body_b64 = if !body_slice.is_empty() {

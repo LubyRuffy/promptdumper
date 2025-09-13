@@ -840,8 +840,10 @@ function App() {
             </thead>
             <tbody className="divide-y divide-border">
               {rows
-                .filter(r => r.req && r.resp)
-                .filter(r => showAll || r.req?.is_llm || r.resp?.is_llm)
+                // 显示：
+                // - 当“显示所有”开启时，任何有请求或响应的行
+                // - 默认只显示识别为 LLM 的请求/响应（允许只有请求的占位行）
+                .filter(r => (showAll ? (r.req || r.resp) : (r.req?.is_llm || r.resp?.is_llm)))
                 .map((r) => (
               <tr
                 key={r.id}
@@ -866,7 +868,7 @@ function App() {
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.req?.method || ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.resp?.status_code ?? ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px] truncate max-w-[16rem]">{r.req?.path || ""}</td>
-                <td className="px-2 py-1.5 align-middle text-[12px]">{humanSize(respSizeForRow(r))}</td>
+                <td className="px-2 py-1.5 align-middle text-[12px]">{r.resp ? humanSize(respSizeForRow(r)) : ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.req?.process_name || r.resp?.process_name}</td>
               </tr>
             ))}
