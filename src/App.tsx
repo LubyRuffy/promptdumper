@@ -538,7 +538,7 @@ function App() {
                     const { inline, children } = props as any;
                     return inline
                       ? <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-[11px]">{children}</code>
-                      : <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded overflow-auto text-[11px]"><code>{children}</code></pre>;
+                      : <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded text-[11px] w-full whitespace-pre-wrap break-all"><code>{children}</code></pre>;
                   },
                 }}
               >
@@ -552,7 +552,7 @@ function App() {
             <div className="text-[12px] font-semibold my-1">{t("tool_calls")}</div>
             <div className="space-y-2">
               {toolCalls.map((tc: any, i: number) => (
-                <SyntaxHighlighter key={i} language="json" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+                <SyntaxHighlighter key={i} language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
                   {JSON.stringify(tc, null, 2)}
                 </SyntaxHighlighter>
               ))}
@@ -578,7 +578,7 @@ function App() {
                 const { inline, children } = props as any;
                 return inline
                   ? <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-[11px]">{children}</code>
-                  : <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded overflow-auto text-[11px]"><code>{children}</code></pre>;
+                  : <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded text-[11px] w-full whitespace-pre-wrap break-all"><code>{children}</code></pre>;
               },
             }}
           >
@@ -593,7 +593,7 @@ function App() {
   function renderHeadersAsHttp(startLine: string, headers: HeaderKV[]) {
     const text = [startLine, ...headers.map(h => `${h.name}: ${h.value}`)].join("\n");
     return (
-      <SyntaxHighlighter language="http" style={syntaxStyle} customStyle={{ margin: 0, background: "transparent", fontSize: 12 }}>
+      <SyntaxHighlighter language="http" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, background: "transparent", fontSize: 12, width: "100%" }}>
         {text}
       </SyntaxHighlighter>
     );
@@ -628,7 +628,7 @@ function App() {
     if (ct.includes("text/event-stream")) {
       if (mode === "raw") {
         return wrap(
-          <SyntaxHighlighter language="plaintext" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+          <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
             {text}
           </SyntaxHighlighter>
         );
@@ -668,7 +668,8 @@ function App() {
               key={i}
               language={ev.kind === "json" ? "json" : "plaintext"}
               style={atomOneLight}
-              customStyle={{ margin: 0, fontSize: 12 }}
+              wrapLongLines
+              customStyle={{ margin: 0, fontSize: 12, width: "100%" }}
             >
               {ev.pretty}
             </SyntaxHighlighter>
@@ -678,11 +679,11 @@ function App() {
     }
     if (ct.includes("application/json")) {
       if (mode === "raw") {
-        return wrap(<pre className="text-xs whitespace-pre-wrap">{text}</pre>);
+        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
       }
       try {
         return wrap(
-          <SyntaxHighlighter language="json" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+          <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
             {JSON.stringify(JSON.parse(text), null, 2)}
           </SyntaxHighlighter>
         );
@@ -695,7 +696,7 @@ function App() {
         try {
           const parsed = JSON.parse(text);
           return wrap(
-            <SyntaxHighlighter language="json" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+            <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
               {JSON.stringify(parsed, null, 2)}
             </SyntaxHighlighter>
           );
@@ -704,10 +705,10 @@ function App() {
     }
     if (ct.includes("application/javascript") || ct.includes("text/javascript") || ct.includes("ecmascript")) {
       if (mode === "raw") {
-        return wrap(<pre className="text-xs whitespace-pre-wrap">{text}</pre>);
+        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
       }
       return wrap(
-        <SyntaxHighlighter language="javascript" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+        <SyntaxHighlighter language="javascript" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
           {text}
         </SyntaxHighlighter>
       );
@@ -715,7 +716,7 @@ function App() {
     if (ct.includes("application/x-www-form-urlencoded")) {
       if (mode === "raw") {
         return wrap(
-          <SyntaxHighlighter language="plaintext" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+          <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
             {text}
           </SyntaxHighlighter>
         );
@@ -732,27 +733,27 @@ function App() {
         })
         .join("\n");
       return wrap(
-        <SyntaxHighlighter language="plaintext" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+        <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
           {formatted || text}
         </SyntaxHighlighter>
       );
     }
     if (ct.includes("text/html") || ct.includes("application/xml") || ct.includes("text/xml")) {
       if (mode === "raw") {
-        return wrap(<pre className="text-xs whitespace-pre-wrap">{text}</pre>);
+        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
       }
       return wrap(
-        <SyntaxHighlighter language="xml" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+        <SyntaxHighlighter language="xml" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
           {text}
         </SyntaxHighlighter>
       );
     }
     if (ct.startsWith("text/")) {
       if (mode === "raw") {
-        return wrap(<pre className="text-xs whitespace-pre-wrap">{text}</pre>);
+        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
       }
       return wrap(
-        <SyntaxHighlighter language="plaintext" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+        <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
           {text}
         </SyntaxHighlighter>
       );
@@ -761,7 +762,7 @@ function App() {
     if (ct.includes("application/x-ndjson") || ct.includes("application/ndjson")) {
       if (mode === "raw") {
         return wrap(
-          <SyntaxHighlighter language="plaintext" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+          <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
             {text}
           </SyntaxHighlighter>
         );
@@ -780,13 +781,13 @@ function App() {
             try {
               const obj = JSON.parse(line);
               return (
-                <SyntaxHighlighter key={i} language="json" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+                <SyntaxHighlighter key={i} language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
                   {JSON.stringify(obj, null, 2)}
                 </SyntaxHighlighter>
               );
             } catch {
               return (
-                <SyntaxHighlighter key={i} language="plaintext" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+                <SyntaxHighlighter key={i} language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
                   {line}
                 </SyntaxHighlighter>
               );
@@ -803,7 +804,7 @@ function App() {
         try {
           const parsed = JSON.parse(text);
           return wrap(
-            <SyntaxHighlighter language="json" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+            <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
               {JSON.stringify(parsed, null, 2)}
             </SyntaxHighlighter>
           );
@@ -814,7 +815,7 @@ function App() {
     // Fallback: 如果有聚合文本（如流式积累），就按纯文本展示
     if (aggText && aggText.length > 0) {
       return wrap(
-        <SyntaxHighlighter language="plaintext" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+        <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
           {text}
         </SyntaxHighlighter>
       );
@@ -829,7 +830,7 @@ function App() {
       const ascii = Array.from(slice).map((b) => (b >= 32 && b <= 126 ? String.fromCharCode(b) : ".")).join("");
       hexLines.push(i.toString(16).padStart(8, "0") + "  " + hex.padEnd(16 * 3 - 1, " ") + "  |" + ascii + "|");
     }
-    return wrap(<pre className="text-xs font-mono">{hexLines.join("\n")}</pre>);
+    return wrap(<pre className="text-xs font-mono w-full whitespace-pre-wrap break-all">{hexLines.join("\n")}</pre>);
   }
 
   return (
