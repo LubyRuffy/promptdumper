@@ -72,7 +72,6 @@ function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = useMemo(() => rows.find((r) => r.id === selectedId), [rows, selectedId]);
   const [running, setRunning] = useState(false);
-  const [reqBodyMode, setReqBodyMode] = useState<"pretty" | "raw">("pretty");
   const [respBodyMode, setRespBodyMode] = useState<"pretty" | "raw">("pretty");
   const [respAgg, setRespAgg] = useState<Record<string, { ct: string; text: string; size: number }>>({});
   const [showAll, setShowAll] = useState<boolean>(false);
@@ -198,7 +197,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    setReqBodyMode("pretty");
     setRespBodyMode("pretty");
   }, [selectedId]);
 
@@ -965,19 +963,40 @@ function App() {
                 {selected?.req ? (
                   <div className="space-y-2">
                     {renderHeadersAsHttp(`${selected.req.method} ${selected.req.path} HTTP/${selected.req.version}`, selected.req.headers)}
-                    {bodyPreview(
-                      selected.req.headers,
-                      selected.req.body_base64,
-                      reqBodyMode,
-                      undefined,
-                      () => setReqBodyMode(m => m === "pretty" ? "raw" : "pretty"),
-                      // If this is an LLM call with NDJSON response, and curl didn't set JSON content-type for request,
-                      // try to pretty print request body as JSON when it looks like JSON.
-                      ((selected.req?.is_llm || selected.resp?.is_llm) &&
-                        !!(selected.resp?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "")
-                          .toLowerCase()
-                          .includes("ndjson"))
-                    )}
+                    {((selected.req?.body_len || selected.req?.body_base64) ? (
+                      <Tabs defaultValue="format">
+                        <TabsList>
+                          <TabsTrigger value="raw">{t("raw")}</TabsTrigger>
+                          <TabsTrigger value="format">{t("format")}</TabsTrigger>
+                        </TabsList>
+                        <TabsContent value="raw">
+                          {bodyPreview(
+                            selected.req.headers,
+                            selected.req.body_base64,
+                            "raw",
+                            undefined,
+                            undefined,
+                            ((selected.req?.is_llm || selected.resp?.is_llm) &&
+                              !!(selected.resp?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "")
+                                .toLowerCase()
+                                .includes("ndjson"))
+                          )}
+                        </TabsContent>
+                        <TabsContent value="format">
+                          {bodyPreview(
+                            selected.req.headers,
+                            selected.req.body_base64,
+                            "pretty",
+                            undefined,
+                            undefined,
+                            ((selected.req?.is_llm || selected.resp?.is_llm) &&
+                              !!(selected.resp?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "")
+                                .toLowerCase()
+                                .includes("ndjson"))
+                          )}
+                        </TabsContent>
+                      </Tabs>
+                    ) : null)}
                   </div>
                 ) : <div className="text-sm text-muted-foreground">{t("no_request")}</div>}
               </ScrollArea>
