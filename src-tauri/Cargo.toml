@@ -1,7 +1,7 @@
 [package]
 name = "promptdumper"
-version = "0.1.0"
-description = "A Tauri App"
+version = "0.1.2"
+description = "llm prompt dumper"
 authors = ["lubyruffy"]
 edition = "2024"
 repository = "https://github.com/LubyRuffy/promptdumper"

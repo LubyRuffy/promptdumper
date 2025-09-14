@@ -105,6 +105,7 @@ function App() {
       no_response: "未选择或无响应",
       thinking: "思考",
       contentTitle: "正文",
+      tool_calls: "工具调用",
       theme_system: "系统",
       theme_light: "浅色",
       theme_dark: "深色",
@@ -134,6 +135,7 @@ function App() {
       no_response: "No response selected",
       thinking: "Thinking",
       contentTitle: "Content",
+      tool_calls: "Tool Calls",
       theme_system: "System",
       theme_light: "Light",
       theme_dark: "Dark",
@@ -333,6 +335,9 @@ function App() {
     // 兼容 OpenAI choices[].delta / message / content，以及通用 "reasoning" | "reasoning_content"
     const reasoningBuf: string[] = [];
     const contentBuf: string[] = [];
+    // 收集工具调用（支持流式增量和最终消息）
+    const toolCallsFinal: any[] = [];
+    const toolCallsDelta: Record<string, { id?: string; index?: number; type?: string; function?: { name?: string; arguments?: string } }> = {};
 
     const pushText = (v: any, into: string[]) => {
       if (!v) return;
@@ -363,6 +368,35 @@ function App() {
       }
     };
 
+    const addToolCallDelta = (tc: any) => {
+      if (!tc) return;
+      // 使用 index 作为主键进行聚合（OpenAI 流式场景中 index 始终稳定），
+      // 若 index 缺失再回退到 id，最后回退到单一聚合键。
+      const key = (typeof tc.index === 'number' ? `idx:${tc.index}` : (tc.id ? `id:${tc.id}` : 'one')) as string;
+      if (!toolCallsDelta[key]) toolCallsDelta[key] = { id: tc.id, index: tc.index, type: tc.type || 'function', function: { name: undefined, arguments: '' } };
+      const cur = toolCallsDelta[key];
+      if (!cur.function) cur.function = {};
+      const name = tc.function?.name || tc.name;
+      const argsPart = tc.function?.arguments ?? tc.arguments ?? '';
+      if (name && !cur.function.name) cur.function.name = name;
+      if (typeof argsPart === 'string' && argsPart) cur.function.arguments = (cur.function.arguments || '') + argsPart;
+    };
+
+    const addToolCallFull = (tc: any) => {
+      if (!tc) return;
+      // 统一成 { type: 'function', function: { name, arguments } } 形态
+      if (tc.function || (tc.name || tc.arguments)) {
+        toolCallsFinal.push(tc.function ? tc : { type: 'function', function: { name: tc.name, arguments: tc.arguments } });
+        return;
+      }
+      if (tc.tool_calls) {
+        for (const t of tc.tool_calls) addToolCallFull(t);
+        return;
+      }
+      // 兜底直接放入
+      toolCallsFinal.push(tc);
+    };
+
     const addFromObj = (obj: any) => {
       if (!obj || typeof obj !== 'object') return;
       // Ollama chat format: { message: { content: string, thinking: string } }
@@ -370,6 +404,11 @@ function App() {
         const m = obj.message as any;
         pushText(m.thinking, reasoningBuf);
         pushText(m.content, contentBuf);
+        // 非流式最终工具调用
+        if (Array.isArray(m.tool_calls)) {
+          for (const tc of m.tool_calls) addToolCallFull(tc);
+        }
+        if (m.function_call) addToolCallFull({ type: 'function', function: m.function_call });
       }
       pushText(obj.reasoning, reasoningBuf);
       pushText(obj.reasoning_content, reasoningBuf);
@@ -380,17 +419,36 @@ function App() {
             pushText(c.delta.reasoning, reasoningBuf);
             pushText(c.delta.reasoning_content, reasoningBuf);
             pushText(c.delta.content, contentBuf);
+            // 流式工具调用（新接口）
+            if (Array.isArray(c.delta.tool_calls)) {
+              for (const tc of c.delta.tool_calls) addToolCallDelta(tc);
+            }
+            // 旧接口 function_call 增量
+            if (c.delta.function_call) addToolCallDelta({ type: 'function', function: c.delta.function_call, index: 0 });
           }
           if (c.message) {
             pushText(c.message.reasoning, reasoningBuf);
             pushText(c.message.reasoning_content, reasoningBuf);
             pushText(c.message.content, contentBuf);
+            // 最终工具调用
+            if (Array.isArray(c.message.tool_calls)) {
+              for (const tc of c.message.tool_calls) addToolCallFull(tc);
+            }
+            if (c.message.function_call) addToolCallFull({ type: 'function', function: c.message.function_call });
           }
           pushText(c.reasoning, reasoningBuf);
           pushText(c.reasoning_content, reasoningBuf);
           pushText(c.text, contentBuf);
           pushText(c.content, contentBuf);
         }
+      }
+      // 顶层同名字段
+      if (Array.isArray((obj as any).tool_calls)) {
+        for (const tc of (obj as any).tool_calls) addToolCallFull(tc);
+      }
+      if ((obj as any).function_call) addToolCallFull({ type: 'function', function: (obj as any).function_call });
+      if (Array.isArray((obj as any).parallel_tool_calls)) {
+        for (const tc of (obj as any).parallel_tool_calls) addToolCallFull(tc);
       }
       pushText(obj.content, contentBuf);
       pushText(obj.text, contentBuf);
@@ -438,14 +496,24 @@ function App() {
 
     const reasoning = reasoningBuf.join("");
     const content = contentBuf.join("");
-    return { reasoning, content };
+    // 将增量工具调用合并为最终形态
+    Object.values(toolCallsDelta)
+      .sort((a, b) => {
+        const ai = typeof a.index === 'number' ? a.index : 0;
+        const bi = typeof b.index === 'number' ? b.index : 0;
+        return ai - bi;
+      })
+      .forEach((v) => {
+        toolCallsFinal.push({ type: v.type || 'function', id: v.id, index: v.index, function: { name: v.function?.name, arguments: v.function?.arguments } });
+      });
+    return { reasoning, content, toolCalls: toolCallsFinal };
   }
 
   function MarkdownView({ headers: _headers, base64, aggText }: { headers: HeaderKV[]; base64?: string; aggText?: string }) {
     const bytes = decodeBody(base64);
     const raw = aggText ?? (bytes ? new TextDecoder().decode(bytes) : "");
     const deferredRaw = useDeferredValue(raw);
-    const { reasoning, content } = useMemo(() => parseLlmMarkdown(deferredRaw), [deferredRaw]);
+    const { reasoning, content, toolCalls } = useMemo(() => parseLlmMarkdown(deferredRaw), [deferredRaw]);
     const [reasoningOpen, setReasoningOpen] = useState<boolean>(() => !!reasoning && !content);
     const [reasoningUserToggled, setReasoningUserToggled] = useState<boolean>(false);
     useEffect(() => {
@@ -480,6 +548,18 @@ function App() {
               </ReactMarkdown>
             </div>
           </details>
+        ) : null}
+        {toolCalls && toolCalls.length > 0 ? (
+          <div className="mb-2">
+            <div className="text-[12px] font-semibold my-1">{t("tool_calls")}</div>
+            <div className="space-y-2">
+              {toolCalls.map((tc: any, i: number) => (
+                <SyntaxHighlighter key={i} language="json" style={syntaxStyle} customStyle={{ margin: 0, fontSize: 12 }}>
+                  {JSON.stringify(tc, null, 2)}
+                </SyntaxHighlighter>
+              ))}
+            </div>
+          </div>
         ) : null}
         {content ? (
         <div className="text-[12px] leading-6">

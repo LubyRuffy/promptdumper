@@ -11,6 +11,7 @@ LLM 提示词抓包工具，支持本地 Ollama 与 LM Studio 等模型对话的
 - 支持`Transfer-Encoding: chunked`的完整响应的获取和显示
 - Header 与 Body 高亮（JSON/HTML/JS/XML/Plain/Hexdump），Body 支持 Pretty/Raw以及内容Markdown的 切换
 - 支持Reasoning和Content的提取和显示
+- 支持 Tool Call（含流式增量与最终结果）以 JSON 代码块高亮、Pretty 显示
 - 支持请求的进程信息提取（macOS）
 - 列表右键支持“复制为 curl/Copy as curl”，可复现请求（自动选择 http/https）
 - 跨平台桌面应用
