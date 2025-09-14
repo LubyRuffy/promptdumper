@@ -20,6 +20,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { ProviderIcon } from "./components/ProviderIcon";
+import BigCodeViewer from "./components/ui/BigCodeViewer";
 
 type HeaderKV = { name: string; value: string };
 type HttpReq = {
@@ -510,6 +511,7 @@ function App() {
   function MarkdownView({ headers: _headers, base64, aggText }: { headers: HeaderKV[]; base64?: string; aggText?: string }) {
     const bytes = decodeBody(base64);
     const raw = aggText ?? (bytes ? new TextDecoder().decode(bytes) : "");
+    // 大文本解析开销较大，使用延迟值避免阻塞切换
     const deferredRaw = useDeferredValue(raw);
     const { reasoning, content, toolCalls } = useMemo(() => parseLlmMarkdown(deferredRaw), [deferredRaw]);
     const [reasoningOpen, setReasoningOpen] = useState<boolean>(() => !!reasoning && !content);
@@ -642,6 +644,7 @@ function App() {
     onToggle?: () => void,
     jsonIfLooksLike?: boolean,
   ) {
+    const HIGHLIGHT_HEAVY_THRESHOLD = 40000; // 超过该长度，退化为非高亮渲染以提升性能
     const bytes = decodeBody(base64);
     const ct = headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "";
     const text = aggText ?? (bytes ? new TextDecoder().decode(bytes) : "");
@@ -696,13 +699,21 @@ function App() {
         // ignore other SSE fields (event:, id:, retry:) in pretty mode
       }
       flush();
+      // 若事件很多，避免一次渲染大量高亮组件导致卡顿，退化为 Monaco 只读视图
+      const shouldRenderPlain = events.length > 80 || text.length > HIGHLIGHT_HEAVY_THRESHOLD;
+      if (shouldRenderPlain) {
+        const merged = events.map((e) => e.pretty).join("\n\n");
+        const jsonRatio = events.length ? events.filter((e) => e.kind === "json").length / events.length : 0;
+        const lang = jsonRatio > 0.5 ? "json" : "plaintext";
+        return wrap(<BigCodeViewer value={merged} language={lang as any} theme={isDark ? "vs-dark" : "light"} height={480} />);
+      }
       return wrap(
         <div className="space-y-2">
           {events.map((ev, i) => (
             <SyntaxHighlighter
               key={i}
               language={ev.kind === "json" ? "json" : "plaintext"}
-              style={atomOneLight}
+              style={syntaxStyle}
               wrapLongLines
               customStyle={{ margin: 0, fontSize: 12, width: "100%" }}
             >
@@ -717,9 +728,13 @@ function App() {
         return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
       }
       try {
+        const pretty = JSON.stringify(JSON.parse(text), null, 2);
+        if (pretty.length > HIGHLIGHT_HEAVY_THRESHOLD) {
+          return wrap(<BigCodeViewer value={pretty} language="json" theme={isDark ? "vs-dark" : "light"} height={480} />);
+        }
         return wrap(
           <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-            {JSON.stringify(JSON.parse(text), null, 2)}
+            {pretty}
           </SyntaxHighlighter>
         );
       } catch {}
@@ -730,9 +745,13 @@ function App() {
       if ((trimmed.startsWith("{") || trimmed.startsWith("["))) {
         try {
           const parsed = JSON.parse(text);
+          const pretty = JSON.stringify(parsed, null, 2);
+          if (pretty.length > HIGHLIGHT_HEAVY_THRESHOLD) {
+            return wrap(<BigCodeViewer value={pretty} language="json" theme={isDark ? "vs-dark" : "light"} height={480} />);
+          }
           return wrap(
             <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-              {JSON.stringify(parsed, null, 2)}
+              {pretty}
             </SyntaxHighlighter>
           );
         } catch {}
@@ -803,14 +822,22 @@ function App() {
         );
       }
       const lines = text.replace(/\r/g, "").split("\n").filter(Boolean);
+      const shouldRenderPlain = lines.length > 200 || text.length > HIGHLIGHT_HEAVY_THRESHOLD;
+      if (shouldRenderPlain) {
+        // 直接合并显示，避免创建过多高亮组件
+        const mergedLines = lines.map((ln) => ln.trim()).filter((line) => line && !/^[0-9a-fA-F]+$/.test(line) && line !== "0");
+        const merged = mergedLines.join("\n");
+        const scanCount = Math.min(mergedLines.length, 200);
+        const jsonLike = mergedLines.slice(0, scanCount).filter((l) => l.startsWith("{") || l.startsWith("[")).length / (scanCount || 1);
+        const lang = jsonLike > 0.5 ? "json" : "plaintext";
+        return wrap(<BigCodeViewer value={merged} language={lang as any} theme={isDark ? "vs-dark" : "light"} height={480} />);
+      }
       return wrap(
         <div className="space-y-2">
           {lines.map((ln, i) => {
             let line = ln.trim();
             if (!line) return null;
-            // skip pure chunk-size (hex) or terminator 0
             if (/^[0-9a-fA-F]+$/.test(line) || line === "0") return null;
-            // handle "<hex> {json}" on same line
             const hexPrefix = /^([0-9a-fA-F]+)\s+(\{.*)$/.exec(line);
             if (hexPrefix) line = hexPrefix[2];
             try {
@@ -838,9 +865,13 @@ function App() {
       if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
         try {
           const parsed = JSON.parse(text);
+          const pretty = JSON.stringify(parsed, null, 2);
+          if (pretty.length > HIGHLIGHT_HEAVY_THRESHOLD) {
+            return wrap(<BigCodeViewer value={pretty} language="json" theme={isDark ? "vs-dark" : "light"} height={480} />);
+          }
           return wrap(
             <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-              {JSON.stringify(parsed, null, 2)}
+              {pretty}
             </SyntaxHighlighter>
           );
         } catch {}
@@ -849,6 +880,11 @@ function App() {
 
     // Fallback: 如果有聚合文本（如流式积累），就按纯文本展示
     if (aggText && aggText.length > 0) {
+      if (text.length > HIGHLIGHT_HEAVY_THRESHOLD) {
+        const firstNonEmpty = (text.match(/[\S\s]/) ? text.trimStart() : "");
+        const looksJson = firstNonEmpty.startsWith("{") || firstNonEmpty.startsWith("[");
+        return wrap(<BigCodeViewer value={text} language={(looksJson ? "json" : "plaintext") as any} theme={isDark ? "vs-dark" : "light"} height={480} />);
+      }
       return wrap(
         <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
           {text}
