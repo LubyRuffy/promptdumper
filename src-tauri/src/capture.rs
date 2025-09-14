@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::thread::yield_now;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use base64::{engine::general_purpose, Engine as _};
@@ -133,6 +133,12 @@ static CONNECTIONS: Lazy<DashMap<ConnectionKey, ConnectionBuffers>> =
 
 static CAPTURE_THREAD: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
 static CAPTURE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+// Cache process lookup results to avoid spawning lsof repeatedly and blocking the capture loop
+static PROCESS_CACHE: Lazy<DashMap<u16, (Option<String>, Option<i32>, Instant)>> =
+    Lazy::new(|| DashMap::new());
+static PROCESS_LOOKUP_INFLIGHT: Lazy<DashMap<u16, ()>> = Lazy::new(|| DashMap::new());
+const PROCESS_CACHE_TTL: Duration = Duration::from_secs(10);
 
 fn now_rfc3339() -> String {
     OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap_or_else(|_| "".into())
@@ -590,35 +596,46 @@ fn enrich_resp_with_endpoints(mut evt: HttpResponseEvent, src_ip: &str, src_port
 
 #[cfg(target_os = "macos")]
 fn try_lookup_process(port: u16, _is_server_side: bool) -> (Option<String>, Option<i32>) {
-    use std::process::Command;
-    let mut cmd = Command::new("/usr/sbin/lsof");
-    cmd.arg("-n").arg("-P");
-    // Port filter must be in the same -i option argument
-    cmd.arg(format!("-iTCP:{}", port));
-    if let Ok(output) = cmd.output() {
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout);
-            let mut best: Option<(String, i32, i32)> = None; // (pname, pid, score)
-            for (idx, line) in s.lines().enumerate() {
-                if idx == 0 { continue; }
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() < 2 { continue; }
-                let pname = parts[0].to_string();
-                let pid = match parts[1].parse::<i32>() { Ok(v) => v, Err(_) => continue };
-                // Score based on whole line to avoid picking (ESTABLISHED) token
-                let line_str = line;
-                // Prefer when local (left) port equals target:  :<port>->
-                let score = if line_str.contains(&format!(":{}->", port)) { 3 }
-                            else if line_str.contains(&format!(":{}", port)) { 1 }
-                            else { 0 };
-                match &best {
-                    Some((_, _, bscore)) if *bscore >= score => {}
-                    _ => { best = Some((pname.clone(), pid, score)); }
-                }
-            }
-            if let Some((p, pid, _)) = best { return (Some(p), Some(pid)); }
+    // 命中缓存且未过期，直接返回
+    if let Some(entry) = PROCESS_CACHE.get(&port) {
+        let (name, pid, ts) = (&entry.0, &entry.1, &entry.2);
+        if ts.elapsed() < PROCESS_CACHE_TTL {
+            return (name.clone(), *pid);
         }
     }
+
+    // 未命中或过期：如果没有正在查询，则异步发起一次 lsof 查询
+    if PROCESS_LOOKUP_INFLIGHT.insert(port, ()).is_none() {
+        thread::spawn(move || {
+            use std::process::Command;
+            let mut best: Option<(String, i32, i32)> = None; // (pname, pid, score)
+            if let Ok(output) = Command::new("/usr/sbin/lsof").arg("-n").arg("-P").arg(format!("-iTCP:{}", port)).output() {
+                if output.status.success() {
+                    let s = String::from_utf8_lossy(&output.stdout);
+                    for (idx, line) in s.lines().enumerate() {
+                        if idx == 0 { continue; }
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() < 2 { continue; }
+                        let pname = parts[0].to_string();
+                        let pid = match parts[1].parse::<i32>() { Ok(v) => v, Err(_) => continue };
+                        // Score based on whole line to avoid picking (ESTABLISHED) token
+                        let score = if line.contains(&format!(":{}->", port)) { 3 }
+                                    else if line.contains(&format!(":{}", port)) { 1 }
+                                    else { 0 };
+                        match &best {
+                            Some((_, _, bscore)) if *bscore >= score => {}
+                            _ => { best = Some((pname.clone(), pid, score)); }
+                        }
+                    }
+                }
+            }
+            let (name_opt, pid_opt) = match best { Some((p, pid, _)) => (Some(p), Some(pid)), None => (None, None) };
+            PROCESS_CACHE.insert(port, (name_opt, pid_opt, Instant::now()));
+            PROCESS_LOOKUP_INFLIGHT.remove(&port);
+        });
+    }
+
+    // 立即返回占位值，不阻塞抓包循环
     (None, None)
 }
 
@@ -867,6 +884,8 @@ pub fn stop_capture() {
         let _ = handle.join();
     }
     CONNECTIONS.clear();
+    PROCESS_CACHE.clear();
+    PROCESS_LOOKUP_INFLIGHT.clear();
 }
 
 

@@ -1,6 +1,6 @@
 [package]
 name = "promptdumper"
-version = "0.1.2"
+version = "0.1.3"
 description = "llm prompt dumper"
 authors = ["lubyruffy"]
 edition = "2024"
