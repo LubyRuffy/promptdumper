@@ -514,6 +514,39 @@ function App() {
     const { reasoning, content, toolCalls } = useMemo(() => parseLlmMarkdown(deferredRaw), [deferredRaw]);
     const [reasoningOpen, setReasoningOpen] = useState<boolean>(() => !!reasoning && !content);
     const [reasoningUserToggled, setReasoningUserToggled] = useState<boolean>(false);
+    // JSON 判定与美化
+    function prettyJsonOrNull(text: string | undefined | null): string | null {
+      if (!text) return null;
+      const t = text.trim();
+      if (!(t.startsWith("{") || t.startsWith("["))) return null;
+      try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return null; }
+    }
+    const prettyReasoningTopLevel = useMemo(() => prettyJsonOrNull(reasoning), [reasoning]);
+    const prettyContentTopLevel = useMemo(() => prettyJsonOrNull(content), [content]);
+    // Markdown 代码块渲染：若为 JSON（或看起来像 JSON），则高亮并格式化
+    function MdCode(props: any) {
+      const { inline, className, children } = props as { inline?: boolean; className?: string; children?: any };
+      if (inline) {
+        return <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-[11px]">{children}</code>;
+      }
+      const rawText = String(children || "").replace(/\n$/, "");
+      const langMatch = /language-([\w-]+)/.exec(className || "");
+      const specified = (langMatch?.[1] || "").toLowerCase();
+      const looksJson = specified === "json" || /^(\s*[\[{])/.test(rawText);
+      if (looksJson) {
+        let toShow = rawText;
+        try { toShow = JSON.stringify(JSON.parse(rawText), null, 2); } catch {}
+        return (
+          <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
+            {toShow}
+          </SyntaxHighlighter>
+        );
+      }
+      // 其它语言保持原样（或可扩展为按需高亮）
+      return (
+        <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded text-[11px] w-full whitespace-pre-wrap break-all"><code>{rawText}</code></pre>
+      );
+    }
     useEffect(() => {
       if (!reasoningUserToggled && reasoning && !content) {
         setReasoningOpen(true);
@@ -525,25 +558,26 @@ function App() {
           <details className="mb-2" open={reasoningOpen} onToggle={(e) => { setReasoningOpen((e.target as HTMLDetailsElement).open); setReasoningUserToggled(true); }}>
             <summary className="cursor-pointer select-none text-[12px] font-semibold">{t("thinking")}</summary>
             <div className="mt-1 text-[12px] leading-6">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  h1: (props: any) => <h3 className="text-[12px] font-semibold my-1" {...props} />,
-                  h2: (props: any) => <h4 className="text-[12px] font-semibold my-1" {...props} />,
-                  h3: (props: any) => <h5 className="text-[12px] font-semibold my-1" {...props} />,
-                  p:  (props: any) => <p className="my-1" {...props} />,
-                  ul: (props: any) => <ul className="list-disc ml-4 my-1" {...props} />,
-                  ol: (props: any) => <ol className="list-decimal ml-4 my-1" {...props} />,
-                  code: (props: any) => {
-                    const { inline, children } = props as any;
-                    return inline
-                      ? <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-[11px]">{children}</code>
-                      : <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded text-[11px] w-full whitespace-pre-wrap break-all"><code>{children}</code></pre>;
-                  },
-                }}
-              >
-                {reasoning}
-              </ReactMarkdown>
+              {prettyReasoningTopLevel ? (
+                <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
+                  {prettyReasoningTopLevel}
+                </SyntaxHighlighter>
+              ) : (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    h1: (props: any) => <h3 className="text-[12px] font-semibold my-1" {...props} />,
+                    h2: (props: any) => <h4 className="text-[12px] font-semibold my-1" {...props} />,
+                    h3: (props: any) => <h5 className="text-[12px] font-semibold my-1" {...props} />,
+                    p:  (props: any) => <p className="my-1" {...props} />,
+                    ul: (props: any) => <ul className="list-disc ml-4 my-1" {...props} />,
+                    ol: (props: any) => <ol className="list-decimal ml-4 my-1" {...props} />,
+                    code: MdCode,
+                  }}
+                >
+                  {reasoning}
+                </ReactMarkdown>
+              )}
             </div>
           </details>
         ) : null}
@@ -561,29 +595,30 @@ function App() {
         ) : null}
         {content ? (
         <div className="text-[12px] leading-6">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              table: (props: any) => <table className="table-fixed border-collapse my-2" {...props} />,
-              thead: (props: any) => <thead className="bg-gray-100 dark:bg-gray-800" {...props} />,
-              th: (props: any) => <th className="border px-2 py-1 text-left text-[12px]" {...props} />,
-              td: (props: any) => <td className="border px-2 py-1 text-left text-[12px]" {...props} />,
-              h1: (props: any) => <h3 className="text-[12px] font-semibold my-1" {...props} />,
-              h2: (props: any) => <h4 className="text-[12px] font-semibold my-1" {...props} />,
-              h3: (props: any) => <h5 className="text-[12px] font-semibold my-1" {...props} />,
-              p:  (props: any) => <p className="my-1" {...props} />,
-              ul: (props: any) => <ul className="list-disc ml-4 my-1" {...props} />,
-              ol: (props: any) => <ol className="list-decimal ml-4 my-1" {...props} />,
-              code: (props: any) => {
-                const { inline, children } = props as any;
-                return inline
-                  ? <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-[11px]">{children}</code>
-                  : <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded text-[11px] w-full whitespace-pre-wrap break-all"><code>{children}</code></pre>;
-              },
-            }}
-          >
-            {content}
-          </ReactMarkdown>
+          {prettyContentTopLevel ? (
+            <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
+              {prettyContentTopLevel}
+            </SyntaxHighlighter>
+          ) : (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                table: (props: any) => <table className="table-fixed border-collapse my-2" {...props} />,
+                thead: (props: any) => <thead className="bg-gray-100 dark:bg-gray-800" {...props} />,
+                th: (props: any) => <th className="border px-2 py-1 text-left text-[12px]" {...props} />,
+                td: (props: any) => <td className="border px-2 py-1 text-left text-[12px]" {...props} />,
+                h1: (props: any) => <h3 className="text-[12px] font-semibold my-1" {...props} />,
+                h2: (props: any) => <h4 className="text-[12px] font-semibold my-1" {...props} />,
+                h3: (props: any) => <h5 className="text-[12px] font-semibold my-1" {...props} />,
+                p:  (props: any) => <p className="my-1" {...props} />,
+                ul: (props: any) => <ul className="list-disc ml-4 my-1" {...props} />,
+                ol: (props: any) => <ol className="list-decimal ml-4 my-1" {...props} />,
+                code: MdCode,
+              }}
+            >
+              {content}
+            </ReactMarkdown>
+          )}
         </div>
         ) : null}
       </div>
