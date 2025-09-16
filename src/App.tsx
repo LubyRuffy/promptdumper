@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useDeferredValue, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { clsx } from "clsx";
@@ -7,64 +7,17 @@ import { ScrollArea } from "./components/ui/scroll-area";
 import { Button } from "./components/ui/button";
 import { Checkbox } from "./components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
-import { Light as SyntaxHighlighter } from "react-syntax-highlighter";
-import atomOneLight from "react-syntax-highlighter/dist/esm/styles/hljs/atom-one-light";
-import atomOneDark from "react-syntax-highlighter/dist/esm/styles/hljs/atom-one-dark";
-import httpLang from "react-syntax-highlighter/dist/esm/languages/hljs/http";
-import jsonLang from "react-syntax-highlighter/dist/esm/languages/hljs/json";
-import xmlLang from "react-syntax-highlighter/dist/esm/languages/hljs/xml";
-import jsLang from "react-syntax-highlighter/dist/esm/languages/hljs/javascript";
-import plaintextLang from "react-syntax-highlighter/dist/esm/languages/hljs/plaintext";
-import { Code, FileText, Languages, Sun, Moon, Monitor } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Languages, Sun, Moon, Monitor } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { ProviderIcon } from "./components/ProviderIcon";
-import BigCodeViewer from "./components/ui/BigCodeViewer";
+import { Row, HttpReq, HttpResp } from "./types/http";
+import HttpHeaders from "./components/HttpHeaders";
+import BodyPreview from "./components/BodyPreview";
+import MarkdownView from "./components/MarkdownView";
+import { getSyntaxStyle } from "./syntax";
+import { buildCurlFromRow, formatSize } from "./utils/http";
 
-type HeaderKV = { name: string; value: string };
-type HttpReq = {
-  id: string;
-  timestamp: string;
-  src_ip: string;
-  src_port: number;
-  dst_ip: string;
-  dst_port: number;
-  method: string;
-  path: string;
-  version: string;
-  headers: HeaderKV[];
-  body_base64?: string;
-  body_len: number;
-  process_name?: string;
-  pid?: number;
-  is_llm: boolean;
-  llm_provider?: string;
-};
-type HttpResp = {
-  id: string;
-  timestamp: string;
-  src_ip: string;
-  src_port: number;
-  dst_ip: string;
-  dst_port: number;
-  status_code: number;
-  reason?: string;
-  version: string;
-  headers: HeaderKV[];
-  body_base64?: string;
-  body_len: number;
-  process_name?: string;
-  pid?: number;
-  is_llm: boolean;
-  llm_provider?: string;
-};
-
-type Row = {
-  id: string;
-  req?: HttpReq;
-  resp?: HttpResp;
-};
+// Types moved to ./types/http
 
 function App() {
   const [ifaces, setIfaces] = useState<{ name: string; desc?: string | null; ip?: string | null }[]>([]);
@@ -240,11 +193,7 @@ function App() {
     setRunning(false);
   }
 
-  function humanSize(n: number) {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  }
+  // moved to utils/http as formatSize
 
   function respSizeForRow(r: Row): number {
     const agg = respAgg[r.id];
@@ -254,49 +203,7 @@ function App() {
     return r.resp?.body_len ?? 0;
   }
 
-  function decodeBody(base64?: string): Uint8Array | null {
-    if (!base64) return null;
-    try { return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)); } catch { return null; }
-  }
-
-  function escapeShellArg(s: string): string {
-    return "'" + s.replace(/'/g, "'\\''") + "'";
-  }
-
-  function buildCurlFromRow(r: Row): string {
-    if (!r.req) return "";
-    const req = r.req;
-    // URL: prefer Host header; fallback to dst_ip:dst_port
-    const hostHeader = req.headers.find(h => h.name.toLowerCase() === "host")?.value || "";
-    const host = hostHeader.trim() || `${req.dst_ip}:${req.dst_port}`;
-    const path = req.path.startsWith("/") ? req.path : ("/" + req.path);
-    const forwardedProto = req.headers.find(h => h.name.toLowerCase() === "x-forwarded-proto")?.value?.toLowerCase() || "";
-    const scheme = (forwardedProto === "https" || req.dst_port === 443) ? "https" : "http";
-    const url = `${scheme}://${host}${path}`;
-    // Headers: include all except content-length (curl will set)
-    const headerArgs = req.headers
-      .filter(h => h.name.toLowerCase() !== "content-length")
-      .map(h => `-H ${escapeShellArg(`${h.name}: ${h.value}`)}`)
-      .join(" ");
-    // Method
-    const methodArg = `-X ${req.method}`;
-    // Body
-    let bodyArg = "";
-    if (req.body_base64) {
-      const bytes = decodeBody(req.body_base64);
-      if (bytes && bytes.length > 0) {
-        let bodyText: string;
-        try {
-          bodyText = new TextDecoder().decode(bytes);
-        } catch {
-          bodyText = "";
-        }
-        if (bodyText) bodyArg = `--data-binary ${escapeShellArg(bodyText)}`;
-      }
-    }
-    const parts = ["curl", "-sS", methodArg, headerArgs, bodyArg, escapeShellArg(url)].filter(Boolean);
-    return parts.join(" ").replace(/\s+/g, " ").trim();
-  }
+  // buildCurlFromRow moved to utils/http
 
   async function copyAsCurl(r: Row, pos?: { x: number; y: number }) {
     const cmd = buildCurlFromRow(r);
@@ -322,587 +229,14 @@ function App() {
     window.setTimeout(() => setCopyTip(null), 1500);
   }
 
-  // register once
-  SyntaxHighlighter.registerLanguage("http", httpLang);
-  SyntaxHighlighter.registerLanguage("json", jsonLang);
-  SyntaxHighlighter.registerLanguage("xml", xmlLang);
-  SyntaxHighlighter.registerLanguage("plaintext", plaintextLang);
-  SyntaxHighlighter.registerLanguage("javascript", jsLang);
-  const syntaxStyle = isDark ? atomOneDark : atomOneLight;
-  function parseLlmMarkdown(text: string) {
-    // 尝试从 JSON（或 SSE JSON 行）中提取 reasoning / reasoning_content 与正文（常见字段）
-    // 兼容 OpenAI choices[].delta / message / content，以及通用 "reasoning" | "reasoning_content"
-    const reasoningBuf: string[] = [];
-    const contentBuf: string[] = [];
-    // 收集工具调用（支持流式增量和最终消息）
-    const toolCallsFinal: any[] = [];
-    const toolCallsDelta: Record<string, { id?: string; index?: number; type?: string; function?: { name?: string; arguments?: string } }> = {};
+  const syntaxStyle = getSyntaxStyle(isDark);
+  // parseLlmMarkdown moved to utils/llm
 
-    const pushText = (v: any, into: string[]) => {
-      if (!v) return;
-      if (typeof v === 'string') { into.push(v); return; }
-      if (Array.isArray(v)) {
-        for (const item of v) {
-          if (typeof item === 'string') { into.push(item); continue; }
-          if (item && typeof item === 'object') {
-            // OpenAI / others: { type: 'text', text: '...' }
-            if (typeof (item as any).text === 'string') { into.push((item as any).text); continue; }
-            if (typeof (item as any).content === 'string') { into.push((item as any).content); continue; }
-            if (typeof (item as any).value === 'string') { into.push((item as any).value); continue; }
-          }
-        }
-        return;
-      }
-      if (typeof v === 'object') {
-        if (Array.isArray((v as any).content)) {
-          for (const x of (v as any).content) {
-            if (typeof x === 'string') contentBuf.push(x);
-            else if (x && typeof x === 'object' && typeof (x as any).text === 'string') contentBuf.push((x as any).text);
-          }
-        } else {
-          if (typeof (v as any).text === 'string') into.push((v as any).text);
-          if (typeof (v as any).content === 'string') into.push((v as any).content);
-          if (typeof (v as any).value === 'string') into.push((v as any).value);
-        }
-      }
-    };
+  // local MarkdownView removed; using components/MarkdownView instead
 
-    const addToolCallDelta = (tc: any) => {
-      if (!tc) return;
-      // 使用 index 作为主键进行聚合（OpenAI 流式场景中 index 始终稳定），
-      // 若 index 缺失再回退到 id，最后回退到单一聚合键。
-      const key = (typeof tc.index === 'number' ? `idx:${tc.index}` : (tc.id ? `id:${tc.id}` : 'one')) as string;
-      if (!toolCallsDelta[key]) toolCallsDelta[key] = { id: tc.id, index: tc.index, type: tc.type || 'function', function: { name: undefined, arguments: '' } };
-      const cur = toolCallsDelta[key];
-      if (!cur.function) cur.function = {};
-      const name = tc.function?.name || tc.name;
-      const argsPart = tc.function?.arguments ?? tc.arguments ?? '';
-      if (name && !cur.function.name) cur.function.name = name;
-      if (typeof argsPart === 'string' && argsPart) cur.function.arguments = (cur.function.arguments || '') + argsPart;
-    };
+  // local renderHeadersAsHttp removed; using components/HttpHeaders instead
 
-    const addToolCallFull = (tc: any) => {
-      if (!tc) return;
-      // 统一成 { type: 'function', function: { name, arguments } } 形态
-      if (tc.function || (tc.name || tc.arguments)) {
-        toolCallsFinal.push(tc.function ? tc : { type: 'function', function: { name: tc.name, arguments: tc.arguments } });
-        return;
-      }
-      if (tc.tool_calls) {
-        for (const t of tc.tool_calls) addToolCallFull(t);
-        return;
-      }
-      // 兜底直接放入
-      toolCallsFinal.push(tc);
-    };
-
-    const addFromObj = (obj: any) => {
-      if (!obj || typeof obj !== 'object') return;
-      // Ollama chat format: { message: { content: string, thinking: string } }
-      if (obj.message && typeof obj.message === 'object') {
-        const m = obj.message as any;
-        pushText(m.thinking, reasoningBuf);
-        pushText(m.content, contentBuf);
-        // 非流式最终工具调用
-        if (Array.isArray(m.tool_calls)) {
-          for (const tc of m.tool_calls) addToolCallFull(tc);
-        }
-        if (m.function_call) addToolCallFull({ type: 'function', function: m.function_call });
-      }
-      pushText(obj.reasoning, reasoningBuf);
-      pushText(obj.reasoning_content, reasoningBuf);
-      // OpenAI style
-      if (obj.choices) {
-        for (const c of obj.choices) {
-          if (c.delta) {
-            pushText(c.delta.reasoning, reasoningBuf);
-            pushText(c.delta.reasoning_content, reasoningBuf);
-            pushText(c.delta.content, contentBuf);
-            // 流式工具调用（新接口）
-            if (Array.isArray(c.delta.tool_calls)) {
-              for (const tc of c.delta.tool_calls) addToolCallDelta(tc);
-            }
-            // 旧接口 function_call 增量
-            if (c.delta.function_call) addToolCallDelta({ type: 'function', function: c.delta.function_call, index: 0 });
-          }
-          if (c.message) {
-            pushText(c.message.reasoning, reasoningBuf);
-            pushText(c.message.reasoning_content, reasoningBuf);
-            pushText(c.message.content, contentBuf);
-            // 最终工具调用
-            if (Array.isArray(c.message.tool_calls)) {
-              for (const tc of c.message.tool_calls) addToolCallFull(tc);
-            }
-            if (c.message.function_call) addToolCallFull({ type: 'function', function: c.message.function_call });
-          }
-          pushText(c.reasoning, reasoningBuf);
-          pushText(c.reasoning_content, reasoningBuf);
-          pushText(c.text, contentBuf);
-          pushText(c.content, contentBuf);
-        }
-      }
-      // 顶层同名字段
-      if (Array.isArray((obj as any).tool_calls)) {
-        for (const tc of (obj as any).tool_calls) addToolCallFull(tc);
-      }
-      if ((obj as any).function_call) addToolCallFull({ type: 'function', function: (obj as any).function_call });
-      if (Array.isArray((obj as any).parallel_tool_calls)) {
-        for (const tc of (obj as any).parallel_tool_calls) addToolCallFull(tc);
-      }
-      pushText(obj.content, contentBuf);
-      pushText(obj.text, contentBuf);
-    };
-
-    try {
-      const t = text.replace(/\r/g, "");
-      // SSE frames (chunked with data: prefix)
-      if (t.includes("data:")) {
-        const lines = t.split("\n");
-        for (const raw of lines) {
-          const trimmed = raw.trim();
-          if (!trimmed || /^[0-9a-fA-F]+$/.test(trimmed)) continue;
-          const m = /^(?:[0-9a-fA-F]+\s+)?data:\s*(.*)$/.exec(trimmed);
-          if (!m) continue;
-          let payload = m[1].trim();
-          const lastBrace = payload.lastIndexOf('}');
-          if (lastBrace >= 0) payload = payload.slice(0, lastBrace + 1);
-          if (!payload || payload === "[DONE]") continue;
-          try { addFromObj(JSON.parse(payload)); } catch {}
-        }
-      } else {
-        // First, try to parse the whole text as a single JSON document
-        // (covers pretty-printed JSON that contains newlines).
-        const trimmed = t.trimStart();
-        let parsedWhole = false;
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-          try { addFromObj(JSON.parse(t)); parsedWhole = true; } catch {}
-        }
-        // If not a single JSON doc, fall back to NDJSON line-by-line parsing
-        if (!parsedWhole) {
-          if (t.includes("\n")) {
-            const lines = t.split("\n");
-            for (const raw of lines) {
-              const line = raw.trim();
-              if (!line || /^[0-9a-fA-F]+$/.test(line) || line === "0") continue;
-              try { addFromObj(JSON.parse(line)); } catch {}
-            }
-          } else {
-            try { addFromObj(JSON.parse(t)); } catch {}
-          }
-        }
-      }
-    } catch {}
-
-    const reasoning = reasoningBuf.join("");
-    const content = contentBuf.join("");
-    // 将增量工具调用合并为最终形态
-    Object.values(toolCallsDelta)
-      .sort((a, b) => {
-        const ai = typeof a.index === 'number' ? a.index : 0;
-        const bi = typeof b.index === 'number' ? b.index : 0;
-        return ai - bi;
-      })
-      .forEach((v) => {
-        toolCallsFinal.push({ type: v.type || 'function', id: v.id, index: v.index, function: { name: v.function?.name, arguments: v.function?.arguments } });
-      });
-    return { reasoning, content, toolCalls: toolCallsFinal };
-  }
-
-  function MarkdownView({ headers: _headers, base64, aggText }: { headers: HeaderKV[]; base64?: string; aggText?: string }) {
-    const bytes = decodeBody(base64);
-    const raw = aggText ?? (bytes ? new TextDecoder().decode(bytes) : "");
-    // 大文本解析开销较大，使用延迟值避免阻塞切换
-    const deferredRaw = useDeferredValue(raw);
-    const { reasoning, content, toolCalls } = useMemo(() => parseLlmMarkdown(deferredRaw), [deferredRaw]);
-    const [reasoningOpen, setReasoningOpen] = useState<boolean>(() => !!reasoning && !content);
-    const [reasoningUserToggled, setReasoningUserToggled] = useState<boolean>(false);
-    // JSON 判定与美化
-    function prettyJsonOrNull(text: string | undefined | null): string | null {
-      if (!text) return null;
-      const t = text.trim();
-      if (!(t.startsWith("{") || t.startsWith("["))) return null;
-      try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return null; }
-    }
-    const prettyReasoningTopLevel = useMemo(() => prettyJsonOrNull(reasoning), [reasoning]);
-    const prettyContentTopLevel = useMemo(() => prettyJsonOrNull(content), [content]);
-    // Markdown 代码块渲染：若为 JSON（或看起来像 JSON），则高亮并格式化
-    function MdCode(props: any) {
-      const { inline, className, children } = props as { inline?: boolean; className?: string; children?: any };
-      if (inline) {
-        return <code className="px-1 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-[11px]">{children}</code>;
-      }
-      const rawText = String(children || "").replace(/\n$/, "");
-      const langMatch = /language-([\w-]+)/.exec(className || "");
-      const specified = (langMatch?.[1] || "").toLowerCase();
-      const looksJson = specified === "json" || /^(\s*[\[{])/.test(rawText);
-      if (looksJson) {
-        let toShow = rawText;
-        try { toShow = JSON.stringify(JSON.parse(rawText), null, 2); } catch {}
-        return (
-          <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-            {toShow}
-          </SyntaxHighlighter>
-        );
-      }
-      // 其它语言保持原样（或可扩展为按需高亮）
-      return (
-        <pre className="p-2 bg-gray-100 dark:bg-gray-800 rounded text-[11px] w-full whitespace-pre-wrap break-all"><code>{rawText}</code></pre>
-      );
-    }
-    useEffect(() => {
-      if (!reasoningUserToggled && reasoning && !content) {
-        setReasoningOpen(true);
-      }
-    }, [reasoning, content, reasoningUserToggled]);
-    return (
-      <div className="rounded-md border bg-gray-50 dark:bg-gray-900/30 p-3 text-[12px] leading-6">
-        {reasoning ? (
-          <details className="mb-2" open={reasoningOpen} onToggle={(e) => { setReasoningOpen((e.target as HTMLDetailsElement).open); setReasoningUserToggled(true); }}>
-            <summary className="cursor-pointer select-none text-[12px] font-semibold">{t("thinking")}</summary>
-            <div className="mt-1 text-[12px] leading-6">
-              {prettyReasoningTopLevel ? (
-                <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-                  {prettyReasoningTopLevel}
-                </SyntaxHighlighter>
-              ) : (
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    h1: (props: any) => <h3 className="text-[12px] font-semibold my-1" {...props} />,
-                    h2: (props: any) => <h4 className="text-[12px] font-semibold my-1" {...props} />,
-                    h3: (props: any) => <h5 className="text-[12px] font-semibold my-1" {...props} />,
-                    p:  (props: any) => <p className="my-1" {...props} />,
-                    ul: (props: any) => <ul className="list-disc ml-4 my-1" {...props} />,
-                    ol: (props: any) => <ol className="list-decimal ml-4 my-1" {...props} />,
-                    code: MdCode,
-                  }}
-                >
-                  {reasoning}
-                </ReactMarkdown>
-              )}
-            </div>
-          </details>
-        ) : null}
-        {toolCalls && toolCalls.length > 0 ? (
-          <div className="mb-2">
-            <div className="text-[12px] font-semibold my-1">{t("tool_calls")}</div>
-            <div className="space-y-2">
-              {toolCalls.map((tc: any, i: number) => (
-                <SyntaxHighlighter key={i} language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-                  {JSON.stringify(tc, null, 2)}
-                </SyntaxHighlighter>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        {content ? (
-        <div className="text-[12px] leading-6">
-          {prettyContentTopLevel ? (
-            <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-              {prettyContentTopLevel}
-            </SyntaxHighlighter>
-          ) : (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                table: (props: any) => <table className="table-fixed border-collapse my-2" {...props} />,
-                thead: (props: any) => <thead className="bg-gray-100 dark:bg-gray-800" {...props} />,
-                th: (props: any) => <th className="border px-2 py-1 text-left text-[12px]" {...props} />,
-                td: (props: any) => <td className="border px-2 py-1 text-left text-[12px]" {...props} />,
-                h1: (props: any) => <h3 className="text-[12px] font-semibold my-1" {...props} />,
-                h2: (props: any) => <h4 className="text-[12px] font-semibold my-1" {...props} />,
-                h3: (props: any) => <h5 className="text-[12px] font-semibold my-1" {...props} />,
-                p:  (props: any) => <p className="my-1" {...props} />,
-                ul: (props: any) => <ul className="list-disc ml-4 my-1" {...props} />,
-                ol: (props: any) => <ol className="list-decimal ml-4 my-1" {...props} />,
-                code: MdCode,
-              }}
-            >
-              {content}
-            </ReactMarkdown>
-          )}
-        </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  function renderHeadersAsHttp(startLine: string, headers: HeaderKV[]) {
-    const text = [startLine, ...headers.map(h => `${h.name}: ${h.value}`)].join("\n");
-    return (
-      <SyntaxHighlighter language="http" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, background: "transparent", fontSize: 12, width: "100%" }}>
-        {text}
-      </SyntaxHighlighter>
-    );
-  }
-
-  function bodyPreview(
-    headers: HeaderKV[],
-    base64?: string,
-    mode: "pretty" | "raw" = "pretty",
-    aggText?: string,
-    onToggle?: () => void,
-    jsonIfLooksLike?: boolean,
-  ) {
-    const HIGHLIGHT_HEAVY_THRESHOLD = 40000; // 超过该长度，退化为非高亮渲染以提升性能
-    const bytes = decodeBody(base64);
-    const ct = headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "";
-    const text = aggText ?? (bytes ? new TextDecoder().decode(bytes) : "");
-    if (!text) return null;
-    const toggleNode = onToggle ? (
-      <div className="absolute right-2 top-2 z-10">
-        <Button variant="ghost" size="icon" onClick={onToggle}>
-          {mode === "pretty" ? <FileText className="h-4 w-4" /> : <Code className="h-4 w-4" />}
-        </Button>
-      </div>
-    ) : null;
-    const wrap = (child: React.ReactNode) => (
-      <div className="relative">
-        {toggleNode}
-        {child}
-      </div>
-    );
-    // SSE pretty formatting: hide chunk-size lines, keep only data: payload, pretty print JSON per event
-    if (ct.includes("text/event-stream")) {
-      if (mode === "raw") {
-        return wrap(
-          <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-            {text}
-          </SyntaxHighlighter>
-        );
-      }
-      const lines = text.replace(/\r/g, "").split("\n");
-      type Ev = { kind: "json" | "text" | "done"; pretty: string };
-      const events: Ev[] = [];
-      let buf: string[] = [];
-      const isChunkSize = (s: string) => /^[0-9a-fA-F]+$/.test(s.trim());
-      const flush = () => {
-        if (buf.length === 0) return;
-        const payload = buf.join("\n").trim();
-        if (payload === "[DONE]") {
-          events.push({ kind: "done", pretty: "[DONE]" });
-        } else if ((payload.startsWith("{") || payload.startsWith("["))) {
-          try {
-            events.push({ kind: "json", pretty: JSON.stringify(JSON.parse(payload), null, 2) });
-          } catch {
-            events.push({ kind: "text", pretty: payload });
-          }
-        } else {
-          events.push({ kind: "text", pretty: payload });
-        }
-        buf = [];
-      };
-      for (const line of lines) {
-        if (isChunkSize(line)) continue;
-        if (line.startsWith("data:")) { buf.push(line.slice(5).trimStart()); continue; }
-        if (line.trim() === "") { flush(); continue; }
-        // ignore other SSE fields (event:, id:, retry:) in pretty mode
-      }
-      flush();
-      // 若事件很多，避免一次渲染大量高亮组件导致卡顿，退化为 Monaco 只读视图
-      const shouldRenderPlain = events.length > 80 || text.length > HIGHLIGHT_HEAVY_THRESHOLD;
-      if (shouldRenderPlain) {
-        const merged = events.map((e) => e.pretty).join("\n\n");
-        const jsonRatio = events.length ? events.filter((e) => e.kind === "json").length / events.length : 0;
-        const lang = jsonRatio > 0.5 ? "json" : "plaintext";
-        return wrap(<BigCodeViewer value={merged} language={lang as any} theme={isDark ? "vs-dark" : "light"} height={480} />);
-      }
-      return wrap(
-        <div className="space-y-2">
-          {events.map((ev, i) => (
-            <SyntaxHighlighter
-              key={i}
-              language={ev.kind === "json" ? "json" : "plaintext"}
-              style={syntaxStyle}
-              wrapLongLines
-              customStyle={{ margin: 0, fontSize: 12, width: "100%" }}
-            >
-              {ev.pretty}
-            </SyntaxHighlighter>
-          ))}
-        </div>
-      );
-    }
-    if (ct.includes("application/json")) {
-      if (mode === "raw") {
-        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
-      }
-      try {
-        const pretty = JSON.stringify(JSON.parse(text), null, 2);
-        if (pretty.length > HIGHLIGHT_HEAVY_THRESHOLD) {
-          return wrap(<BigCodeViewer value={pretty} language="json" theme={isDark ? "vs-dark" : "light"} height={480} />);
-        }
-        return wrap(
-          <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-            {pretty}
-          </SyntaxHighlighter>
-        );
-      } catch {}
-    }
-    // Compatibility: some curl requests use application/x-www-form-urlencoded but actually send JSON text
-    if (jsonIfLooksLike && mode !== "raw") {
-      const trimmed = text.trimStart();
-      if ((trimmed.startsWith("{") || trimmed.startsWith("["))) {
-        try {
-          const parsed = JSON.parse(text);
-          const pretty = JSON.stringify(parsed, null, 2);
-          if (pretty.length > HIGHLIGHT_HEAVY_THRESHOLD) {
-            return wrap(<BigCodeViewer value={pretty} language="json" theme={isDark ? "vs-dark" : "light"} height={480} />);
-          }
-          return wrap(
-            <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-              {pretty}
-            </SyntaxHighlighter>
-          );
-        } catch {}
-      }
-    }
-    if (ct.includes("application/javascript") || ct.includes("text/javascript") || ct.includes("ecmascript")) {
-      if (mode === "raw") {
-        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
-      }
-      return wrap(
-        <SyntaxHighlighter language="javascript" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-          {text}
-        </SyntaxHighlighter>
-      );
-    }
-    if (ct.includes("application/x-www-form-urlencoded")) {
-      if (mode === "raw") {
-        return wrap(
-          <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-            {text}
-          </SyntaxHighlighter>
-        );
-      }
-      // Pretty print k=v&k2=v2 with URL decoding
-      const formatted = text
-        .split("&")
-        .filter(Boolean)
-        .map((seg) => {
-          const [k, v = ""] = seg.split("=");
-          const dk = (() => { try { return decodeURIComponent((k || "").replace(/\+/g, " ")); } catch { return k || ""; } })();
-          const dv = (() => { try { return decodeURIComponent((v || "").replace(/\+/g, " ")); } catch { return v || ""; } })();
-          return `${dk}: ${dv}`;
-        })
-        .join("\n");
-      return wrap(
-        <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-          {formatted || text}
-        </SyntaxHighlighter>
-      );
-    }
-    if (ct.includes("text/html") || ct.includes("application/xml") || ct.includes("text/xml")) {
-      if (mode === "raw") {
-        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
-      }
-      return wrap(
-        <SyntaxHighlighter language="xml" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-          {text}
-        </SyntaxHighlighter>
-      );
-    }
-    if (ct.startsWith("text/")) {
-      if (mode === "raw") {
-        return wrap(<pre className="text-xs w-full whitespace-pre-wrap break-all">{text}</pre>);
-      }
-      return wrap(
-        <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-          {text}
-        </SyntaxHighlighter>
-      );
-    }
-    // NDJSON: treat as text and pretty-print each JSON line
-    if (ct.includes("application/x-ndjson") || ct.includes("application/ndjson")) {
-      if (mode === "raw") {
-        return wrap(
-          <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-            {text}
-          </SyntaxHighlighter>
-        );
-      }
-      const lines = text.replace(/\r/g, "").split("\n").filter(Boolean);
-      const shouldRenderPlain = lines.length > 200 || text.length > HIGHLIGHT_HEAVY_THRESHOLD;
-      if (shouldRenderPlain) {
-        // 直接合并显示，避免创建过多高亮组件
-        const mergedLines = lines.map((ln) => ln.trim()).filter((line) => line && !/^[0-9a-fA-F]+$/.test(line) && line !== "0");
-        const merged = mergedLines.join("\n");
-        const scanCount = Math.min(mergedLines.length, 200);
-        const jsonLike = mergedLines.slice(0, scanCount).filter((l) => l.startsWith("{") || l.startsWith("[")).length / (scanCount || 1);
-        const lang = jsonLike > 0.5 ? "json" : "plaintext";
-        return wrap(<BigCodeViewer value={merged} language={lang as any} theme={isDark ? "vs-dark" : "light"} height={480} />);
-      }
-      return wrap(
-        <div className="space-y-2">
-          {lines.map((ln, i) => {
-            let line = ln.trim();
-            if (!line) return null;
-            if (/^[0-9a-fA-F]+$/.test(line) || line === "0") return null;
-            const hexPrefix = /^([0-9a-fA-F]+)\s+(\{.*)$/.exec(line);
-            if (hexPrefix) line = hexPrefix[2];
-            try {
-              const obj = JSON.parse(line);
-              return (
-                <SyntaxHighlighter key={i} language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-                  {JSON.stringify(obj, null, 2)}
-                </SyntaxHighlighter>
-              );
-            } catch {
-              return (
-                <SyntaxHighlighter key={i} language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-                  {line}
-                </SyntaxHighlighter>
-              );
-            }
-          })}
-        </div>
-      );
-    }
-
-    // 通用 JSON 猜测（某些客户端未设置 JSON Content-Type），仅在 Pretty 模式下尝试
-    if (mode === "pretty") {
-      const trimmed = text.trimStart();
-      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        try {
-          const parsed = JSON.parse(text);
-          const pretty = JSON.stringify(parsed, null, 2);
-          if (pretty.length > HIGHLIGHT_HEAVY_THRESHOLD) {
-            return wrap(<BigCodeViewer value={pretty} language="json" theme={isDark ? "vs-dark" : "light"} height={480} />);
-          }
-          return wrap(
-            <SyntaxHighlighter language="json" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-              {pretty}
-            </SyntaxHighlighter>
-          );
-        } catch {}
-      }
-    }
-
-    // Fallback: 如果有聚合文本（如流式积累），就按纯文本展示
-    if (aggText && aggText.length > 0) {
-      if (text.length > HIGHLIGHT_HEAVY_THRESHOLD) {
-        const firstNonEmpty = (text.match(/[\S\s]/) ? text.trimStart() : "");
-        const looksJson = firstNonEmpty.startsWith("{") || firstNonEmpty.startsWith("[");
-        return wrap(<BigCodeViewer value={text} language={(looksJson ? "json" : "plaintext") as any} theme={isDark ? "vs-dark" : "light"} height={480} />);
-      }
-      return wrap(
-        <SyntaxHighlighter language="plaintext" style={syntaxStyle} wrapLongLines customStyle={{ margin: 0, fontSize: 12, width: "100%" }}>
-          {text}
-        </SyntaxHighlighter>
-      );
-    }
-
-    // fallback: hex dump
-    const hexLines: string[] = [];
-    const arr = bytes || new Uint8Array();
-    for (let i = 0; i < arr.length; i += 16) {
-      const slice = arr.slice(i, i + 16);
-      const hex = Array.from(slice).map((b) => b.toString(16).padStart(2, "0")).join(" ");
-      const ascii = Array.from(slice).map((b) => (b >= 32 && b <= 126 ? String.fromCharCode(b) : ".")).join("");
-      hexLines.push(i.toString(16).padStart(8, "0") + "  " + hex.padEnd(16 * 3 - 1, " ") + "  |" + ascii + "|");
-    }
-    return wrap(<pre className="text-xs font-mono w-full whitespace-pre-wrap break-all">{hexLines.join("\n")}</pre>);
-  }
+  // local bodyPreview removed; using components/BodyPreview instead
 
   return (
     <div className="h-screen flex flex-col">
@@ -1018,7 +352,7 @@ function App() {
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.req?.method || ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.resp?.status_code ?? ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px] truncate max-w-[16rem]">{r.req?.path || ""}</td>
-                <td className="px-2 py-1.5 align-middle text-[12px]">{r.resp ? humanSize(respSizeForRow(r)) : ""}</td>
+                <td className="px-2 py-1.5 align-middle text-[12px]">{r.resp ? formatSize(respSizeForRow(r)) : ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.req?.process_name || r.resp?.process_name}</td>
               </tr>
             ))}
@@ -1034,7 +368,7 @@ function App() {
                 <h3 className="font-semibold mb-1">{t("request")}</h3>
                 {selected?.req ? (
                   <div className="space-y-2">
-                    {renderHeadersAsHttp(`${selected.req.method} ${selected.req.path} HTTP/${selected.req.version}`, selected.req.headers)}
+                    <HttpHeaders startLine={`${selected.req.method} ${selected.req.path} HTTP/${selected.req.version}`} headers={selected.req.headers} style={syntaxStyle} />
                     {((selected.req?.body_len || selected.req?.body_base64) ? (
                       <Tabs defaultValue="format">
                         <TabsList>
@@ -1042,30 +376,24 @@ function App() {
                           <TabsTrigger value="format">{t("format")}</TabsTrigger>
                         </TabsList>
                         <TabsContent value="raw">
-                          {bodyPreview(
-                            selected.req.headers,
-                            selected.req.body_base64,
-                            "raw",
-                            undefined,
-                            undefined,
-                            ((selected.req?.is_llm || selected.resp?.is_llm) &&
-                              !!(selected.resp?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "")
-                                .toLowerCase()
-                                .includes("ndjson"))
-                          )}
+                          <BodyPreview
+                            headers={selected.req.headers}
+                            base64={selected.req.body_base64}
+                            mode="raw"
+                            jsonIfLooksLike={((selected.req?.is_llm || selected.resp?.is_llm) && !!(selected.resp?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "").toLowerCase().includes("ndjson"))}
+                            isDark={isDark}
+                            style={syntaxStyle}
+                          />
                         </TabsContent>
                         <TabsContent value="format">
-                          {bodyPreview(
-                            selected.req.headers,
-                            selected.req.body_base64,
-                            "pretty",
-                            undefined,
-                            undefined,
-                            ((selected.req?.is_llm || selected.resp?.is_llm) &&
-                              !!(selected.resp?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "")
-                                .toLowerCase()
-                                .includes("ndjson"))
-                          )}
+                          <BodyPreview
+                            headers={selected.req.headers}
+                            base64={selected.req.body_base64}
+                            mode="pretty"
+                            jsonIfLooksLike={((selected.req?.is_llm || selected.resp?.is_llm) && !!(selected.resp?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || "").toLowerCase().includes("ndjson"))}
+                            isDark={isDark}
+                            style={syntaxStyle}
+                          />
                         </TabsContent>
                       </Tabs>
                     ) : null)}
@@ -1079,7 +407,7 @@ function App() {
                 <h3 className="font-semibold mb-1">{t("response")}</h3>
                 {selected?.resp ? (
                   <div className="space-y-2">
-                    {renderHeadersAsHttp(`HTTP/${selected.resp.version} ${selected.resp.status_code}${selected.resp.reason ? ` ${selected.resp.reason}` : ""}`, selected.resp.headers)}
+                    <HttpHeaders startLine={`HTTP/${selected.resp.version} ${selected.resp.status_code}${selected.resp.reason ? ` ${selected.resp.reason}` : ""}`} headers={selected.resp.headers} style={syntaxStyle} />
                     {(selected.resp.is_llm) ? (
                       <Tabs defaultValue="format">
                         <TabsList>
@@ -1088,23 +416,46 @@ function App() {
                           <TabsTrigger value="markdown">{t("markdown")}</TabsTrigger>
                         </TabsList>
                         <TabsContent value="raw">
-                          {bodyPreview(selected.resp.headers, selected.resp.body_base64, "raw", respAgg[selected.id || ""]?.text)}
+                          <BodyPreview
+                            headers={selected.resp.headers}
+                            base64={selected.resp.body_base64}
+                            mode="raw"
+                            aggText={respAgg[selected.id || ""]?.text}
+                            isDark={isDark}
+                            style={syntaxStyle}
+                          />
                         </TabsContent>
                         <TabsContent value="format">
-                          {bodyPreview(selected.resp.headers, selected.resp.body_base64, "pretty", respAgg[selected.id || ""]?.text)}
+                          <BodyPreview
+                            headers={selected.resp.headers}
+                            base64={selected.resp.body_base64}
+                            mode="pretty"
+                            aggText={respAgg[selected.id || ""]?.text}
+                            isDark={isDark}
+                            style={syntaxStyle}
+                          />
                         </TabsContent>
                         <TabsContent value="markdown">
-                          <MarkdownView headers={selected.resp.headers} base64={selected.resp.body_base64} aggText={respAgg[selected.id || ""]?.text} />
+                          <MarkdownView
+                            headers={selected.resp.headers}
+                            base64={selected.resp.body_base64}
+                            aggText={respAgg[selected.id || ""]?.text}
+                            style={syntaxStyle}
+                            thinkingLabel={t("thinking")}
+                            toolCallsLabel={t("tool_calls")}
+                          />
                         </TabsContent>
                       </Tabs>
                     ) : (
-                      bodyPreview(
-                        selected.resp.headers,
-                        selected.resp.body_base64,
-                        respBodyMode,
-                        respAgg[selected.id || ""]?.text,
-                        () => setRespBodyMode(m => m === "pretty" ? "raw" : "pretty"),
-                      )
+                      <BodyPreview
+                        headers={selected.resp.headers}
+                        base64={selected.resp.body_base64}
+                        mode={respBodyMode}
+                        aggText={respAgg[selected.id || ""]?.text}
+                        onToggle={() => setRespBodyMode(m => m === "pretty" ? "raw" : "pretty")}
+                        isDark={isDark}
+                        style={syntaxStyle}
+                      />
                     )}
                   </div>
                 ) : <div className="text-sm text-muted-foreground">{t("no_response")}</div>}
