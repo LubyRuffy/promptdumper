@@ -1,5 +1,6 @@
-import * as Icons from '@lobehub/icons';
-import React from 'react';
+import * as Icons from "@lobehub/icons";
+import React from "react";
+import cherryStudioPng from "../assets/cherrystudio.png";
 
 export type ProviderIconName =
   | 'openai'
@@ -8,7 +9,12 @@ export type ProviderIconName =
   | 'lmstudio'
   | 'anthropic'
   | 'google'
+  | 'cherry-studio'
   | string;
+
+const CherryStudioIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
+  <img src={cherryStudioPng} alt="cherry-studio" style={{ width: size, height: size }} />
+);
 
 const providerToIcon: Record<string, React.ComponentType<{ size?: number }>> = {
   openai: (Icons as any).OpenAI,
@@ -17,6 +23,7 @@ const providerToIcon: Record<string, React.ComponentType<{ size?: number }>> = {
   lmstudio: (Icons as any).LmStudio,
   anthropic: (Icons as any).Anthropic,
   google: (Icons as any).VertexAI,
+  "cherry-studio": CherryStudioIcon,
 };
 
 interface Props {

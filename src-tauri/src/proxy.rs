@@ -370,6 +370,16 @@ async fn handle_client(
                         value: value.to_str().unwrap_or("").to_string(),
                     });
                 }
+                // Ensure Host header exists for rule matching (HTTP/2 usually uses :authority)
+                if !headers_vec
+                    .iter()
+                    .any(|h| h.name.eq_ignore_ascii_case("host"))
+                {
+                    headers_vec.push(Header {
+                        name: "host".into(),
+                        value: host3.clone(),
+                    });
+                }
                 let body_bytes = body_in.collect().await?.to_bytes();
                 let method_str = parts.method.as_str().to_string();
                 let path_q = parts
@@ -537,7 +547,7 @@ async fn handle_client(
                         };
 
                     // emit 首包事件（包含头和首段 body）
-                    let head_evt = HttpResponseEvent {
+                    let mut head_evt = HttpResponseEvent {
                         id: id4.clone(),
                         timestamp: now_rfc3339(),
                         src_ip: host4.clone(),
@@ -563,6 +573,10 @@ async fn handle_client(
                         is_llm: false,
                         llm_provider: None,
                     };
+                    if req_evt.is_llm {
+                        head_evt.is_llm = true;
+                        head_evt.llm_provider = req_evt.llm_provider.clone();
+                    }
                     let _ = app4.emit("onHttpResponse", head_evt);
 
                     // 把首段 body 送入下游
@@ -572,6 +586,8 @@ async fn handle_client(
 
                     // 后续 body 流式转发
                     let resp_headers_spawn = resp_headers.clone();
+                    let req_is_llm_spawn = req_evt.is_llm;
+                    let req_provider_spawn = req_evt.llm_provider.clone();
                     tokio::spawn(async move {
                         let mut buf = vec![0u8; 65536];
                         loop {
@@ -582,7 +598,7 @@ async fn handle_client(
                                         // downstream gone; stop reading and close upstream
                                         break;
                                     }
-                                    let chunk_evt = HttpResponseEvent {
+                                    let mut chunk_evt = HttpResponseEvent {
                                         id: id4.clone(),
                                         timestamp: now_rfc3339(),
                                         src_ip: host4.clone(),
@@ -600,6 +616,10 @@ async fn handle_client(
                                         is_llm: false,
                                         llm_provider: None,
                                     };
+                                    if req_is_llm_spawn {
+                                        chunk_evt.is_llm = true;
+                                        chunk_evt.llm_provider = req_provider_spawn.clone();
+                                    }
                                     let _ = app4.emit("onHttpResponse", chunk_evt);
                                 }
                                 _ => break,
@@ -676,6 +696,10 @@ async fn handle_client(
                         head_evt.is_llm = true;
                         head_evt.llm_provider = Some(provider);
                     }
+                    if req_evt.is_llm {
+                        head_evt.is_llm = true;
+                        head_evt.llm_provider = req_evt.llm_provider.clone();
+                    }
                     let _ = app3.emit("onHttpResponse", head_evt);
                     let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(16);
                     let mut upstream_body = resp.into_body();
@@ -684,6 +708,8 @@ async fn handle_client(
                     let id4 = id.clone();
                     let peer_ip4 = peer_ip.clone();
                     let status_code_value = status.as_u16();
+                    let req_is_llm_spawn = req_evt.is_llm;
+                    let req_provider_spawn = req_evt.llm_provider.clone();
                     tokio::spawn(async move {
                         while let Some(frame_res) = upstream_body.frame().await {
                             match frame_res {
@@ -693,7 +719,7 @@ async fn handle_client(
                                         if tx.send(Ok(Frame::data(bytes.clone()))).await.is_err() {
                                             break;
                                         }
-                                        let chunk_evt = HttpResponseEvent {
+                                        let mut chunk_evt = HttpResponseEvent {
                                             id: id4.clone(),
                                             timestamp: now_rfc3339(),
                                             src_ip: host3.clone(),
@@ -713,6 +739,10 @@ async fn handle_client(
                                             is_llm: false,
                                             llm_provider: None,
                                         };
+                                        if req_is_llm_spawn {
+                                            chunk_evt.is_llm = true;
+                                            chunk_evt.llm_provider = req_provider_spawn.clone();
+                                        }
                                         let _ = app4.emit("onHttpResponse", chunk_evt);
                                     } else if frame.is_trailers() {
                                         if tx.send(Ok(frame)).await.is_err() {

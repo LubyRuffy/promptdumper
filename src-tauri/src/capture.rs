@@ -230,6 +230,31 @@ const DEFAULT_LLM_RULES_JSON: &str = r#"{
       "response": {
         "body_contains_any": ["\"response\"", "\"message\"", "\"model\"", "\"choices\""]
       }
+    },
+    {
+      "provider": "cherry-studio",
+      "request": {
+        "methods": ["POST"],
+        "path_regex": "^/chat/completions$",
+        "headers": [
+          { "name_regex": "(?i)^(host|:authority)$", "value_regex": "^api\\.cherry-ai\\.com(:\\d+)?$" }
+        ],
+        "body_contains_any": ["\"model\""]
+      },
+      "response": {
+        "body_contains_any": ["\"choices\""]
+      }
+    },
+    {
+      "provider": "cherry-studio",
+      "request": {
+        "methods": ["POST"],
+        "path_regex": "^/chat/completions$",
+        "body_contains_any": ["\"model\""]
+      },
+      "response": {
+        "body_contains_any": ["\"choices\""]
+      }
     }
   ]
 }"#;
