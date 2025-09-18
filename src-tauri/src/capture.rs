@@ -1,21 +1,22 @@
-use std::collections::{VecDeque, HashMap};
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::yield_now;
-use std::time::{Duration, Instant};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
+use base64::{Engine as _, engine::general_purpose};
 use dashmap::DashMap;
-use base64::{engine::general_purpose, Engine as _};
+use etherparse::{InternetSlice, SlicedPacket, TransportSlice};
 use once_cell::sync::Lazy;
-use pcap::{Active, Capture, Device, Linktype};
+use crate::process_lookup::try_lookup_process;
 use pcap::Error as PcapError;
-use etherparse::{SlicedPacket, InternetSlice, TransportSlice};
-use tauri::Emitter;
-use rand::{distributions::Alphanumeric, Rng};
-use serde::{Serialize, Deserialize};
+use pcap::{Active, Capture, Device, Linktype};
+use rand::{Rng, distributions::Alphanumeric};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 use thiserror::Error;
 use time::OffsetDateTime;
 
@@ -124,24 +125,21 @@ struct ConnectionBuffers {
     streaming_resp_id: Option<String>,
     streaming_content_type: Option<String>,
     streaming_llm_provider: Option<String>,
-    streaming_headers: Option<Vec<Header>>, 
+    streaming_headers: Option<Vec<Header>>,
     pending_llm_provider: VecDeque<Option<String>>,
 }
 
-static CONNECTIONS: Lazy<DashMap<ConnectionKey, ConnectionBuffers>> =
-    Lazy::new(|| DashMap::new());
+static CONNECTIONS: Lazy<DashMap<ConnectionKey, ConnectionBuffers>> = Lazy::new(|| DashMap::new());
 
 static CAPTURE_THREAD: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
 static CAPTURE_RUNNING: AtomicBool = AtomicBool::new(false);
 
-// Cache process lookup results to avoid spawning lsof repeatedly and blocking the capture loop
-static PROCESS_CACHE: Lazy<DashMap<u16, (Option<String>, Option<i32>, Instant)>> =
-    Lazy::new(|| DashMap::new());
-static PROCESS_LOOKUP_INFLIGHT: Lazy<DashMap<u16, ()>> = Lazy::new(|| DashMap::new());
-const PROCESS_CACHE_TTL: Duration = Duration::from_secs(10);
+// Process lookup cache and logic are centralized in `process_lookup.rs`
 
 fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap_or_else(|_| "".into())
+    OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "".into())
 }
 
 // -------------------- LLM Rules (configurable) --------------------
@@ -216,7 +214,7 @@ const DEFAULT_LLM_RULES_JSON: &str = r#"{
       "provider_by_port": { "1234": "lmstudio", "11434": "ollama" },
       "request": {
         "methods": ["POST"],
-        "path_regex": "^/v1/(chat/completions|completions)",
+        "path_regex": "^/v1/(chat/completions|completions|embeddings)",
         "body_contains_any": ["\"model\"", "\"messages\"", "\"prompt\""]
       },
       "response": {
@@ -238,29 +236,48 @@ const DEFAULT_LLM_RULES_JSON: &str = r#"{
 
 fn compile_header_rule(r: &RawHeaderRule) -> Option<HeaderRuleCompiled> {
     let name = match &r.name_regex {
-        Some(s) if !s.is_empty() => match Regex::new(s) { Ok(rx) => Some(rx), Err(_) => None },
+        Some(s) if !s.is_empty() => match Regex::new(s) {
+            Ok(rx) => Some(rx),
+            Err(_) => None,
+        },
         _ => None,
     };
     let value = match &r.value_regex {
-        Some(s) if !s.is_empty() => match Regex::new(s) { Ok(rx) => Some(rx), Err(_) => None },
+        Some(s) if !s.is_empty() => match Regex::new(s) {
+            Ok(rx) => Some(rx),
+            Err(_) => None,
+        },
         _ => None,
     };
     Some(HeaderRuleCompiled { name, value })
 }
 
 fn compile_side(r: &RawRuleSide) -> Option<RuleSideCompiled> {
-    let methods = r.methods.as_ref().map(|v| v.iter().map(|s| s.to_ascii_uppercase()).collect::<Vec<_>>());
+    let methods = r
+        .methods
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.to_ascii_uppercase()).collect::<Vec<_>>());
     let path = match &r.path_regex {
-        Some(s) if !s.is_empty() => match Regex::new(s) { Ok(rx) => Some(rx), Err(_) => None },
+        Some(s) if !s.is_empty() => match Regex::new(s) {
+            Ok(rx) => Some(rx),
+            Err(_) => None,
+        },
         _ => None,
     };
     let headers_raw = r.headers.clone().unwrap_or_default();
     let mut headers = Vec::new();
     for hr in headers_raw.iter() {
-        if let Some(comp) = compile_header_rule(hr) { headers.push(comp); }
+        if let Some(comp) = compile_header_rule(hr) {
+            headers.push(comp);
+        }
     }
     let body_contains_any = r.body_contains_any.clone().unwrap_or_default();
-    Some(RuleSideCompiled { methods, path, headers, body_contains_any })
+    Some(RuleSideCompiled {
+        methods,
+        path,
+        headers,
+        body_contains_any,
+    })
 }
 
 fn compile_rules(raw: RawLlmRules) -> LlmRules {
@@ -269,7 +286,12 @@ fn compile_rules(raw: RawLlmRules) -> LlmRules {
         let request = rr.request.as_ref().and_then(compile_side);
         let response = rr.response.as_ref().and_then(compile_side);
         let provider_by_port = rr.provider_by_port.unwrap_or_default();
-        rules.push(LlmRuleCompiled { provider: rr.provider, provider_by_port, request, response });
+        rules.push(LlmRuleCompiled {
+            provider: rr.provider,
+            provider_by_port,
+            request,
+            response,
+        });
     }
     LlmRules { rules }
 }
@@ -282,20 +304,32 @@ fn load_llm_rules_from_json_str(s: &str) -> Option<LlmRules> {
 fn load_llm_rules() -> LlmRules {
     // Try load external file from working directory
     if let Ok(s) = std::fs::read_to_string("llm_rules.json") {
-        if let Some(r) = load_llm_rules_from_json_str(&s) { return r; }
+        if let Some(r) = load_llm_rules_from_json_str(&s) {
+            return r;
+        }
     }
     // Fallback: load from default
     load_llm_rules_from_json_str(DEFAULT_LLM_RULES_JSON).unwrap_or(LlmRules { rules: Vec::new() })
 }
 
 fn headers_match(compiled: &RuleSideCompiled, headers: &Vec<Header>) -> bool {
-    if compiled.headers.is_empty() { return true; }
+    if compiled.headers.is_empty() {
+        return true;
+    }
     // All header rules must be satisfied by some header
     'rules: for hr in compiled.headers.iter() {
         for h in headers.iter() {
-            let name_ok = match &hr.name { Some(rx) => rx.is_match(&h.name), None => true };
-            let val_ok = match &hr.value { Some(rx) => rx.is_match(&h.value), None => true };
-            if name_ok && val_ok { continue 'rules; }
+            let name_ok = match &hr.name {
+                Some(rx) => rx.is_match(&h.name),
+                None => true,
+            };
+            let val_ok = match &hr.value {
+                Some(rx) => rx.is_match(&h.value),
+                None => true,
+            };
+            if name_ok && val_ok {
+                continue 'rules;
+            }
         }
         return false;
     }
@@ -303,26 +337,45 @@ fn headers_match(compiled: &RuleSideCompiled, headers: &Vec<Header>) -> bool {
 }
 
 fn body_contains_any(compiled: &RuleSideCompiled, body_b64: &Option<String>) -> bool {
-    if compiled.body_contains_any.is_empty() { return true; }
+    if compiled.body_contains_any.is_empty() {
+        return true;
+    }
     let mut body = String::new();
     if let Some(b64) = body_b64 {
         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
             body = String::from_utf8_lossy(&bytes).to_string();
         }
     }
-    compiled.body_contains_any.iter().any(|needle| body.contains(needle))
+    compiled
+        .body_contains_any
+        .iter()
+        .any(|needle| body.contains(needle))
 }
 
 impl LlmRules {
     fn match_request(&self, evt: &HttpRequestEvent) -> Option<String> {
         for r in &self.rules {
             if let Some(side) = &r.request {
-                if let Some(ms) = &side.methods { if !ms.iter().any(|m| m == &evt.method.to_ascii_uppercase()) { continue; } }
-                if let Some(rx) = &side.path { if !rx.is_match(&evt.path) { continue; } }
-                if !headers_match(side, &evt.headers) { continue; }
-                if !body_contains_any(side, &evt.body_base64) { continue; }
+                if let Some(ms) = &side.methods {
+                    if !ms.iter().any(|m| m == &evt.method.to_ascii_uppercase()) {
+                        continue;
+                    }
+                }
+                if let Some(rx) = &side.path {
+                    if !rx.is_match(&evt.path) {
+                        continue;
+                    }
+                }
+                if !headers_match(side, &evt.headers) {
+                    continue;
+                }
+                if !body_contains_any(side, &evt.body_base64) {
+                    continue;
+                }
                 // prefer per-rule provider_by_port override (server port is dst_port on request)
-                if let Some(p) = r.provider_by_port.get(&evt.dst_port) { return Some(p.clone()); }
+                if let Some(p) = r.provider_by_port.get(&evt.dst_port) {
+                    return Some(p.clone());
+                }
                 return Some(r.provider.clone());
             }
         }
@@ -331,10 +384,16 @@ impl LlmRules {
     fn match_response(&self, evt: &HttpResponseEvent) -> Option<String> {
         for r in &self.rules {
             if let Some(side) = &r.response {
-                if !headers_match(side, &evt.headers) { continue; }
-                if !body_contains_any(side, &evt.body_base64) { continue; }
+                if !headers_match(side, &evt.headers) {
+                    continue;
+                }
+                if !body_contains_any(side, &evt.body_base64) {
+                    continue;
+                }
                 // on response, server port is src_port
-                if let Some(p) = r.provider_by_port.get(&evt.src_port) { return Some(p.clone()); }
+                if let Some(p) = r.provider_by_port.get(&evt.src_port) {
+                    return Some(p.clone());
+                }
                 return Some(r.provider.clone());
             }
         }
@@ -343,7 +402,11 @@ impl LlmRules {
     fn match_text_only(&self, text: &str) -> Option<String> {
         for r in &self.rules {
             if let Some(side) = &r.response {
-                if side.body_contains_any.iter().any(|needle| text.contains(needle)) {
+                if side
+                    .body_contains_any
+                    .iter()
+                    .any(|needle| text.contains(needle))
+                {
                     return Some(r.provider.clone());
                 }
             }
@@ -366,14 +429,10 @@ pub fn list_network_interfaces() -> Result<Vec<NetworkInterfaceInfo>, CaptureErr
         .into_iter()
         .filter_map(|d| {
             // prefer first IPv4 if present, otherwise first address
-            let ip = if let Some(v4) = d
-                .addresses
-                .iter()
-                .find_map(|a| match a.addr {
-                    IpAddr::V4(v4) => Some(v4.to_string()),
-                    _ => None,
-                })
-            {
+            let ip = if let Some(v4) = d.addresses.iter().find_map(|a| match a.addr {
+                IpAddr::V4(v4) => Some(v4.to_string()),
+                _ => None,
+            }) {
                 Some(v4)
             } else if let Some(any_ip) = d.addresses.iter().map(|a| a.addr.to_string()).next() {
                 Some(any_ip)
@@ -382,7 +441,11 @@ pub fn list_network_interfaces() -> Result<Vec<NetworkInterfaceInfo>, CaptureErr
             };
 
             match ip {
-                Some(ip) => Some(NetworkInterfaceInfo { name: d.name, desc: d.desc, ip: Some(ip) }),
+                Some(ip) => Some(NetworkInterfaceInfo {
+                    name: d.name,
+                    desc: d.desc,
+                    ip: Some(ip),
+                }),
                 None => None, // hide interfaces without IP
             }
         })
@@ -431,16 +494,32 @@ fn classify_tcp_endpoints_and_payload(
         _ => return None,
     };
     let (src_port, dst_port, payload) = match sliced.transport {
-        Some(TransportSlice::Tcp(tcp)) => (tcp.source_port(), tcp.destination_port(), tcp.payload().to_vec()),
+        Some(TransportSlice::Tcp(tcp)) => (
+            tcp.source_port(),
+            tcp.destination_port(),
+            tcp.payload().to_vec(),
+        ),
         _ => return None,
     };
-    Some((src_ip.to_string(), src_port, dst_ip.to_string(), dst_port, payload))
+    Some((
+        src_ip.to_string(),
+        src_port,
+        dst_ip.to_string(),
+        dst_port,
+        payload,
+    ))
 }
 
 fn guess_is_request_from_prefix(payload: &[u8]) -> Option<bool> {
     let max = payload.len().min(64);
-    let line_end = payload[..max].iter().position(|&b| b == b'\n').unwrap_or(max);
-    let head = std::str::from_utf8(&payload[..line_end]).ok()?.trim_start_matches(['\r','\n']).trim_start();
+    let line_end = payload[..max]
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(max);
+    let head = std::str::from_utf8(&payload[..line_end])
+        .ok()?
+        .trim_start_matches(['\r', '\n'])
+        .trim_start();
     if head.starts_with("HTTP/") {
         return Some(false);
     }
@@ -578,7 +657,13 @@ fn parse_http_response(buf: &[u8]) -> Option<(usize, HttpResponseEvent)> {
     Some((header_len + content_length, evt))
 }
 
-fn enrich_req_with_endpoints(mut evt: HttpRequestEvent, src_ip: &str, src_port: u16, dst_ip: &str, dst_port: u16) -> HttpRequestEvent {
+fn enrich_req_with_endpoints(
+    mut evt: HttpRequestEvent,
+    src_ip: &str,
+    src_port: u16,
+    dst_ip: &str,
+    dst_port: u16,
+) -> HttpRequestEvent {
     evt.src_ip = src_ip.to_string();
     evt.src_port = src_port;
     evt.dst_ip = dst_ip.to_string();
@@ -586,7 +671,13 @@ fn enrich_req_with_endpoints(mut evt: HttpRequestEvent, src_ip: &str, src_port: 
     evt
 }
 
-fn enrich_resp_with_endpoints(mut evt: HttpResponseEvent, src_ip: &str, src_port: u16, dst_ip: &str, dst_port: u16) -> HttpResponseEvent {
+fn enrich_resp_with_endpoints(
+    mut evt: HttpResponseEvent,
+    src_ip: &str,
+    src_port: u16,
+    dst_ip: &str,
+    dst_port: u16,
+) -> HttpResponseEvent {
     evt.src_ip = src_ip.to_string();
     evt.src_port = src_port;
     evt.dst_ip = dst_ip.to_string();
@@ -594,55 +685,7 @@ fn enrich_resp_with_endpoints(mut evt: HttpResponseEvent, src_ip: &str, src_port
     evt
 }
 
-#[cfg(target_os = "macos")]
-fn try_lookup_process(port: u16, _is_server_side: bool) -> (Option<String>, Option<i32>) {
-    // 命中缓存且未过期，直接返回
-    if let Some(entry) = PROCESS_CACHE.get(&port) {
-        let (name, pid, ts) = (&entry.0, &entry.1, &entry.2);
-        if ts.elapsed() < PROCESS_CACHE_TTL {
-            return (name.clone(), *pid);
-        }
-    }
-
-    // 未命中或过期：如果没有正在查询，则异步发起一次 lsof 查询
-    if PROCESS_LOOKUP_INFLIGHT.insert(port, ()).is_none() {
-        thread::spawn(move || {
-            use std::process::Command;
-            let mut best: Option<(String, i32, i32)> = None; // (pname, pid, score)
-            if let Ok(output) = Command::new("/usr/sbin/lsof").arg("-n").arg("-P").arg(format!("-iTCP:{}", port)).output() {
-                if output.status.success() {
-                    let s = String::from_utf8_lossy(&output.stdout);
-                    for (idx, line) in s.lines().enumerate() {
-                        if idx == 0 { continue; }
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() < 2 { continue; }
-                        let pname = parts[0].to_string();
-                        let pid = match parts[1].parse::<i32>() { Ok(v) => v, Err(_) => continue };
-                        // Score based on whole line to avoid picking (ESTABLISHED) token
-                        let score = if line.contains(&format!(":{}->", port)) { 3 }
-                                    else if line.contains(&format!(":{}", port)) { 1 }
-                                    else { 0 };
-                        match &best {
-                            Some((_, _, bscore)) if *bscore >= score => {}
-                            _ => { best = Some((pname.clone(), pid, score)); }
-                        }
-                    }
-                }
-            }
-            let (name_opt, pid_opt) = match best { Some((p, pid, _)) => (Some(p), Some(pid)), None => (None, None) };
-            PROCESS_CACHE.insert(port, (name_opt, pid_opt, Instant::now()));
-            PROCESS_LOOKUP_INFLIGHT.remove(&port);
-        });
-    }
-
-    // 立即返回占位值，不阻塞抓包循环
-    (None, None)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn try_lookup_process(_port: u16, _is_server_side: bool) -> (Option<String>, Option<i32>) {
-    (None, None)
-}
+// use `try_lookup_process` from `process_lookup` module
 
 pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureError> {
     if CAPTURE_RUNNING.swap(true, Ordering::SeqCst) {
@@ -686,12 +729,24 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                             classify_tcp_endpoints_and_payload(l3, linktype)
                         {
                             let key = ConnectionKey::new(&src_ip, src_port, &dst_ip, dst_port);
-                            let mut state = CONNECTIONS.entry(key).or_insert_with(ConnectionBuffers::default);
+                            let mut state = CONNECTIONS
+                                .entry(key)
+                                .or_insert_with(ConnectionBuffers::default);
                             // Prefer direction by known endpoints; fallback to payload prefix guess
-                            let dir_is_req = if let (Some(client), Some(server)) = (&state.client_endpoint, &state.server_endpoint) {
-                                if src_ip == server.0 && src_port == server.1 && dst_ip == client.0 && dst_port == client.1 {
+                            let dir_is_req = if let (Some(client), Some(server)) =
+                                (&state.client_endpoint, &state.server_endpoint)
+                            {
+                                if src_ip == server.0
+                                    && src_port == server.1
+                                    && dst_ip == client.0
+                                    && dst_port == client.1
+                                {
                                     false
-                                } else if src_ip == client.0 && src_port == client.1 && dst_ip == server.0 && dst_port == server.1 {
+                                } else if src_ip == client.0
+                                    && src_port == client.1
+                                    && dst_ip == server.0
+                                    && dst_port == server.1
+                                {
                                     true
                                 } else {
                                     guess_is_request_from_prefix(&payload).unwrap_or(true)
@@ -700,52 +755,88 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                 guess_is_request_from_prefix(&payload).unwrap_or(true)
                             };
                             if dir_is_req {
-                                state.client_endpoint.get_or_insert((src_ip.clone(), src_port));
-                                state.server_endpoint.get_or_insert((dst_ip.clone(), dst_port));
+                                state
+                                    .client_endpoint
+                                    .get_or_insert((src_ip.clone(), src_port));
+                                state
+                                    .server_endpoint
+                                    .get_or_insert((dst_ip.clone(), dst_port));
                                 state.req_buf.extend_from_slice(&payload);
-                                while let Some((consumed, mut evt)) = parse_http_request(&state.req_buf) {
+                                while let Some((consumed, mut evt)) =
+                                    parse_http_request(&state.req_buf)
+                                {
                                     let (pname, pid) = try_lookup_process(src_port, false);
-                                    evt = enrich_req_with_endpoints(evt, &src_ip, src_port, &dst_ip, dst_port);
+                                    evt = enrich_req_with_endpoints(
+                                        evt, &src_ip, src_port, &dst_ip, dst_port,
+                                    );
                                     // Apply request rules
-                                    if let Some(provider) = llm_rules_for_thread.match_request(&evt) {
+                                    if let Some(provider) = llm_rules_for_thread.match_request(&evt)
+                                    {
                                         evt.is_llm = true;
                                         evt.llm_provider = Some(provider.clone());
                                     }
                                     let id = evt.id.clone();
                                     state.pending_request_ids.push_back(id.clone());
-                                    state.pending_llm_provider.push_back(evt.llm_provider.clone());
+                                    state
+                                        .pending_llm_provider
+                                        .push_back(evt.llm_provider.clone());
                                     evt.process_name = pname;
                                     evt.pid = pid;
-                                    if consumed <= state.req_buf.len() { state.req_buf.drain(0..consumed); } else { state.req_buf.clear(); }
+                                    if consumed <= state.req_buf.len() {
+                                        state.req_buf.drain(0..consumed);
+                                    } else {
+                                        state.req_buf.clear();
+                                    }
                                     let _ = app_handle.emit("onHttpRequest", evt);
                                 }
                             } else {
-                                state.client_endpoint.get_or_insert((dst_ip.clone(), dst_port));
-                                state.server_endpoint.get_or_insert((src_ip.clone(), src_port));
+                                state
+                                    .client_endpoint
+                                    .get_or_insert((dst_ip.clone(), dst_port));
+                                state
+                                    .server_endpoint
+                                    .get_or_insert((src_ip.clone(), src_port));
                                 state.resp_buf.extend_from_slice(&payload);
-                                while let Some((consumed, mut evt)) = parse_http_response(&state.resp_buf) {
+                                while let Some((consumed, mut evt)) =
+                                    parse_http_response(&state.resp_buf)
+                                {
                                     if let Some(id) = state.pending_request_ids.pop_front() {
                                         evt.id = id;
                                     } else {
-                                        if consumed <= state.resp_buf.len() { state.resp_buf.drain(0..consumed); } else { state.resp_buf.clear(); }
+                                        if consumed <= state.resp_buf.len() {
+                                            state.resp_buf.drain(0..consumed);
+                                        } else {
+                                            state.resp_buf.clear();
+                                        }
                                         continue;
                                     }
                                     let (pname, pid) = try_lookup_process(dst_port, true);
-                                    evt = enrich_resp_with_endpoints(evt, &src_ip, src_port, &dst_ip, dst_port);
+                                    evt = enrich_resp_with_endpoints(
+                                        evt, &src_ip, src_port, &dst_ip, dst_port,
+                                    );
                                     evt.process_name = pname;
                                     evt.pid = pid;
                                     // Prefer request side decision, but also try response rules
                                     match state.pending_llm_provider.pop_front() {
-                                        Some(p) => { evt.is_llm = p.is_some(); evt.llm_provider = p; },
+                                        Some(p) => {
+                                            evt.is_llm = p.is_some();
+                                            evt.llm_provider = p;
+                                        }
                                         None => {}
                                     }
                                     if !evt.is_llm {
-                                        if let Some(provider) = llm_rules_for_thread.match_response(&evt) {
+                                        if let Some(provider) =
+                                            llm_rules_for_thread.match_response(&evt)
+                                        {
                                             evt.is_llm = true;
                                             evt.llm_provider = Some(provider.clone());
                                         }
                                     }
-                                    if consumed <= state.resp_buf.len() { state.resp_buf.drain(0..consumed); } else { state.resp_buf.clear(); }
+                                    if consumed <= state.resp_buf.len() {
+                                        state.resp_buf.drain(0..consumed);
+                                    } else {
+                                        state.resp_buf.clear();
+                                    }
                                     let mut is_streaming = false;
                                     let mut resp_ct_header: Option<String> = None;
                                     for h in evt.headers.iter() {
@@ -758,18 +849,23 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                             resp_ct_header = Some(h.value.clone());
                                             if val.contains("text/event-stream") {
                                                 is_streaming = true;
-                                                state.streaming_content_type = Some(h.value.clone());
+                                                state.streaming_content_type =
+                                                    Some(h.value.clone());
                                             }
                                         }
                                     }
                                     // 对于非 SSE 的 chunked（如 NDJSON），也要带上 content-type，便于前端识别
                                     if is_streaming && state.streaming_content_type.is_none() {
-                                        if let Some(ct) = resp_ct_header { state.streaming_content_type = Some(ct); }
+                                        if let Some(ct) = resp_ct_header {
+                                            state.streaming_content_type = Some(ct);
+                                        }
                                     }
                                     if is_streaming {
                                         state.streaming_active = true;
                                         state.streaming_resp_id = Some(evt.id.clone());
-                                        if evt.is_llm { state.streaming_llm_provider = evt.llm_provider.clone(); }
+                                        if evt.is_llm {
+                                            state.streaming_llm_provider = evt.llm_provider.clone();
+                                        }
                                         // 保留首个响应的完整头用于后续 chunk 复用，避免只保留 content-type
                                         state.streaming_headers = Some(evt.headers.clone());
                                     }
@@ -777,50 +873,13 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                 }
                                 if state.streaming_active && !state.resp_buf.is_empty() {
                                     let chunk = std::mem::take(&mut state.resp_buf);
-                                    if chunk.is_empty() { /* do not emit empty chunks */ } else {
-                                    let mut evt = HttpResponseEvent {
-                                        id: state.streaming_resp_id.clone().unwrap_or_else(gen_id),
-                                        timestamp: now_rfc3339(),
-                                        src_ip: String::new(),
-                                        src_port: 0,
-                                        dst_ip: String::new(),
-                                        dst_port: 0,
-                                        status_code: 200,
-                                        reason: None,
-                                        version: "1.1".into(),
-                                        headers: state.streaming_headers.clone().unwrap_or_else(|| match &state.streaming_content_type {
-                                            Some(ct) => vec![Header { name: "content-type".into(), value: ct.clone() }],
-                                            None => Vec::new(),
-                                        }),
-                                        body_base64: Some(general_purpose::STANDARD.encode(&chunk)),
-                                        body_len: chunk.len(),
-                                        process_name: None,
-                                        pid: None,
-                                        is_llm: state.streaming_llm_provider.is_some(),
-                                        llm_provider: state.streaming_llm_provider.clone(),
-                                    };
-                                    evt = enrich_resp_with_endpoints(evt, &src_ip, src_port, &dst_ip, dst_port);
-                                    let (pname, pid) = try_lookup_process(dst_port, true);
-                                    evt.process_name = pname;
-                                    evt.pid = pid;
-                                    // If provider unknown yet, try textual match on chunk
-                                    if !evt.is_llm {
-                                        if let Ok(text) = String::from_utf8(chunk.clone()) {
-                                            if let Some(provider) = llm_rules_for_thread.match_text_only(&text) {
-                                                evt.is_llm = true;
-                                                evt.llm_provider = Some(provider.clone());
-                                                state.streaming_llm_provider = evt.llm_provider.clone();
-                                            }
-                                        }
-                                    }
-                                    let _ = app_handle.emit("onHttpResponse", evt);
-                                    }
-                                }
-                                if state.streaming_active {
-                                    let done_marker = b"[DONE]";
-                                    if payload.windows(done_marker.len()).any(|w| w == done_marker) {
+                                    if chunk.is_empty() { /* do not emit empty chunks */
+                                    } else {
                                         let mut evt = HttpResponseEvent {
-                                            id: state.streaming_resp_id.clone().unwrap_or_else(gen_id),
+                                            id: state
+                                                .streaming_resp_id
+                                                .clone()
+                                                .unwrap_or_else(gen_id),
                                             timestamp: now_rfc3339(),
                                             src_ip: String::new(),
                                             src_port: 0,
@@ -829,18 +888,90 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                             status_code: 200,
                                             reason: None,
                                             version: "1.1".into(),
-                                            headers: state.streaming_headers.clone().unwrap_or_else(|| match &state.streaming_content_type {
-                                                Some(ct) => vec![Header { name: "content-type".into(), value: ct.clone() }],
-                                                None => Vec::new(),
-                                            }),
-                                            body_base64: Some(general_purpose::STANDARD.encode(done_marker)),
+                                            headers: state
+                                                .streaming_headers
+                                                .clone()
+                                                .unwrap_or_else(|| {
+                                                    match &state.streaming_content_type {
+                                                        Some(ct) => vec![Header {
+                                                            name: "content-type".into(),
+                                                            value: ct.clone(),
+                                                        }],
+                                                        None => Vec::new(),
+                                                    }
+                                                }),
+                                            body_base64: Some(
+                                                general_purpose::STANDARD.encode(&chunk),
+                                            ),
+                                            body_len: chunk.len(),
+                                            process_name: None,
+                                            pid: None,
+                                            is_llm: state.streaming_llm_provider.is_some(),
+                                            llm_provider: state.streaming_llm_provider.clone(),
+                                        };
+                                        evt = enrich_resp_with_endpoints(
+                                            evt, &src_ip, src_port, &dst_ip, dst_port,
+                                        );
+                                        let (pname, pid) = try_lookup_process(dst_port, true);
+                                        evt.process_name = pname;
+                                        evt.pid = pid;
+                                        // If provider unknown yet, try textual match on chunk
+                                        if !evt.is_llm {
+                                            if let Ok(text) = String::from_utf8(chunk.clone()) {
+                                                if let Some(provider) =
+                                                    llm_rules_for_thread.match_text_only(&text)
+                                                {
+                                                    evt.is_llm = true;
+                                                    evt.llm_provider = Some(provider.clone());
+                                                    state.streaming_llm_provider =
+                                                        evt.llm_provider.clone();
+                                                }
+                                            }
+                                        }
+                                        let _ = app_handle.emit("onHttpResponse", evt);
+                                    }
+                                }
+                                if state.streaming_active {
+                                    let done_marker = b"[DONE]";
+                                    if payload.windows(done_marker.len()).any(|w| w == done_marker)
+                                    {
+                                        let mut evt = HttpResponseEvent {
+                                            id: state
+                                                .streaming_resp_id
+                                                .clone()
+                                                .unwrap_or_else(gen_id),
+                                            timestamp: now_rfc3339(),
+                                            src_ip: String::new(),
+                                            src_port: 0,
+                                            dst_ip: String::new(),
+                                            dst_port: 0,
+                                            status_code: 200,
+                                            reason: None,
+                                            version: "1.1".into(),
+                                            headers: state
+                                                .streaming_headers
+                                                .clone()
+                                                .unwrap_or_else(|| {
+                                                    match &state.streaming_content_type {
+                                                        Some(ct) => vec![Header {
+                                                            name: "content-type".into(),
+                                                            value: ct.clone(),
+                                                        }],
+                                                        None => Vec::new(),
+                                                    }
+                                                }),
+                                            body_base64: Some(
+                                                general_purpose::STANDARD.encode(done_marker),
+                                            ),
                                             body_len: done_marker.len(),
                                             process_name: None,
                                             pid: None,
                                             is_llm: state.streaming_llm_provider.is_some(),
                                             llm_provider: state.streaming_llm_provider.clone(),
                                         };
-                                        evt = enrich_resp_with_endpoints(evt, &src_ip, src_port, &dst_ip, dst_port);
+                                        evt = enrich_resp_with_endpoints(
+                                            evt, &src_ip, src_port, &dst_ip, dst_port,
+                                        );
                                         let (pname, pid) = try_lookup_process(dst_port, true);
                                         evt.process_name = pname;
                                         evt.pid = pid;
@@ -857,13 +988,11 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                         }
                     }
                 }
-                Err(err) => {
-                    match err {
-                        PcapError::NoMorePackets => yield_now(),
-                        PcapError::TimeoutExpired => yield_now(),
-                        _ => std::thread::sleep(Duration::from_millis(1)),
-                    }
-                }
+                Err(err) => match err {
+                    PcapError::NoMorePackets => yield_now(),
+                    PcapError::TimeoutExpired => yield_now(),
+                    _ => std::thread::sleep(Duration::from_millis(1)),
+                },
             }
         }
     });
@@ -884,8 +1013,5 @@ pub fn stop_capture() {
         let _ = handle.join();
     }
     CONNECTIONS.clear();
-    PROCESS_CACHE.clear();
-    PROCESS_LOOKUP_INFLIGHT.clear();
+    crate::process_lookup::clear_process_lookup();
 }
-
-

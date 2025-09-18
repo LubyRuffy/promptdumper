@@ -7,8 +7,20 @@ import { ScrollArea } from "./components/ui/scroll-area";
 import { Button } from "./components/ui/button";
 import { Checkbox } from "./components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
-import { Languages, Sun, Moon, Monitor } from "lucide-react";
+import { Languages, Sun, Moon, Monitor, Settings as SettingsIcon } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "./components/ui/alert-dialog";
 import { ProviderIcon } from "./components/ProviderIcon";
 import { Row, HttpReq, HttpResp } from "./types/http";
 import HttpHeaders from "./components/HttpHeaders";
@@ -38,6 +50,26 @@ function App() {
     row?: Row;
   } | null>(null);
   const [copyTip, setCopyTip] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [proxyAddr, setProxyAddr] = useState<string>(() => localStorage.getItem("proxyAddr") || "127.0.0.1:38080");
+  const [upstream, setUpstream] = useState<string>(() => localStorage.getItem("upstreamProxy") || "");
+  const [proxyRunning, setProxyRunning] = useState<boolean>(false);
+  const [caInstalled, setCaInstalled] = useState<boolean>(false);
+  const [configOpen, setConfigOpen] = useState<boolean>(false);
+  const [notices, setNotices] = useState<{
+    id: number;
+    variant?: "default" | "destructive" | "success" | "warning";
+    title?: string;
+    description?: string;
+  }[]>([]);
+
+  const pushNotice = useCallback((n: { variant?: "default" | "destructive" | "success" | "warning"; title?: string; description?: string; timeoutMs?: number }) => {
+    const id = Date.now() + Math.random();
+    setNotices((old) => [...old, { id, variant: n.variant, title: n.title, description: n.description }]);
+    const timeout = typeof n.timeoutMs === "number" ? n.timeoutMs : 4500;
+    window.setTimeout(() => {
+      setNotices((old) => old.filter((x) => x.id !== id));
+    }, timeout);
+  }, []);
 
   const translations: Record<string, Record<string, string>> = {
     zh: {
@@ -69,6 +101,18 @@ function App() {
       language_label: "语言",
       copy_as_curl: "复制为 curl",
       copied: "已复制到剪贴板",
+      install_ca: "安装CA",
+      uninstall_ca: "卸载CA",
+      start_proxy: "启动代理",
+      stop_proxy: "停止代理",
+      proxy_addr: "代理地址",
+      upstream: "上级代理(可选)",
+      settings: "设置",
+      proxy_and_cert: "代理与证书",
+      confirm: "确认",
+      cancel: "取消",
+      confirm_uninstall_title: "确认卸载CA",
+      confirm_uninstall_desc: "卸载根证书后将无法进行HTTPS解密，中断MITM功能。是否继续？",
     },
     en: {
       start: "Start",
@@ -99,6 +143,22 @@ function App() {
       language_label: "Language",
       copy_as_curl: "Copy as curl",
       copied: "Copied to clipboard",
+      install_ca: "Install CA",
+      uninstall_ca: "Uninstall CA",
+      start_proxy: "Start Proxy",
+      stop_proxy: "Stop Proxy",
+      proxy_addr: "Proxy Address",
+      upstream: "Upstream (optional)",
+      settings: "Settings",
+      proxy_and_cert: "Proxy & Certificate",
+      confirm: "Confirm",
+      cancel: "Cancel",
+      confirm_uninstall_title: "Confirm Uninstall CA",
+      confirm_uninstall_desc: "After uninstalling the root CA, HTTPS MITM will stop working. Continue?",
+      ca_install_success: "CA installed successfully",
+      ca_install_fail: "CA installation not completed",
+      ca_uninstall_success: "CA uninstalled successfully",
+      ca_uninstall_fail: "CA uninstall failed",
     },
   };
   const t = useCallback((k: keyof typeof translations["zh"]) => translations[lang]?.[k] || (k as string), [lang]);
@@ -109,6 +169,10 @@ function App() {
       setIfaces(list);
       if (list.some((d) => d.name === "lo")) setIface("lo");
       if (list.some((d) => d.name === "lo0")) setIface("lo0");
+      try {
+        const installed = (await invoke("is_ca_installed")) as boolean;
+        setCaInstalled(!!installed);
+      } catch {}
     })();
     const unlistenReqP = listen<HttpReq>("onHttpRequest", (e) => {
       const data = e.payload;
@@ -140,7 +204,8 @@ function App() {
       setRows((old) => {
         const nx = [...old];
         const idx = nx.findIndex((r) => r.id === data.id);
-        if (idx >= 0) nx[idx].resp = data; // 只更新已有请求，不创建只有响应的行
+        if (idx >= 0) nx[idx].resp = data;
+        else nx.unshift({ id: data.id, resp: data }); // 确保没有请求事件时也能看到响应
         return nx.slice(0, 500);
       });
     });
@@ -191,6 +256,54 @@ function App() {
   async function stop() {
     await invoke("stop_capture");
     setRunning(false);
+  }
+  async function doUninstallConfirmed() {
+    try {
+      await invoke("uninstall_ca");
+      setCaInstalled(false);
+      pushNotice({ variant: "success", title: t("uninstall_ca"), description: t("ca_uninstall_success") });
+    } catch (e: any) {
+      pushNotice({ variant: "destructive", title: t("uninstall_ca"), description: (e?.toString?.() || t("ca_uninstall_fail")) as string });
+    }
+  }
+
+  async function installOrUninstallCA() {
+    if (caInstalled) return; // 实际卸载由弹窗确认触发
+    try {
+      try { await invoke("ensure_ca"); } catch {}
+      // 调用是否成功均进入轮询（.mobileconfig 流程会抛错，但需要继续等待用户安装）
+      const started = Date.now();
+      const timeoutMs = 120_000; // 最多等待 120s
+      const interval = 1500;
+      let last = false;
+      while (Date.now() - started < timeoutMs) {
+        try {
+          const installed = (await invoke("is_ca_installed")) as boolean;
+          last = !!installed;
+          if (installed) break;
+        } catch {}
+        await new Promise((r) => setTimeout(r, interval));
+      }
+      setCaInstalled(last);
+      if (last) {
+        pushNotice({ variant: "success", title: t("install_ca"), description: t("ca_install_success") });
+      } else {
+        pushNotice({ variant: "destructive", title: t("install_ca"), description: t("ca_install_fail") });
+      }
+    } catch (e: any) {
+      pushNotice({ variant: "destructive", title: t("install_ca"), description: (e?.toString?.() || t("ca_install_fail")) as string });
+    }
+  }
+  async function startProxy() {
+    try {
+      await invoke("start_proxy", { args: { addr: proxyAddr, upstream: upstream || null } });
+      setProxyRunning(true);
+      localStorage.setItem("proxyAddr", proxyAddr);
+      localStorage.setItem("upstreamProxy", upstream || "");
+    } catch {}
+  }
+  async function stopProxy() {
+    try { await invoke("stop_proxy"); setProxyRunning(false); } catch {}
   }
 
   // moved to utils/http as formatSize
@@ -263,6 +376,12 @@ function App() {
           <span>{t("show_all")}</span>
         </label>
         <div className="ml-auto flex items-center gap-1.5">
+          <Button size="sm" variant="outline" onClick={() => setConfigOpen(v => !v)}>
+            <span className="inline-flex items-center gap-1">
+              <SettingsIcon className="h-4 w-4" />
+              {t("settings")}
+            </span>
+          </Button>
           <Select value={theme} onValueChange={(v) => setTheme(v as any)}>
             <SelectTrigger variant="icon" aria-label={t("theme_label")} hideChevron>
               {theme === "system" ? (
@@ -305,6 +424,51 @@ function App() {
           </Select>
         </div>
       </div>
+      {configOpen ? (
+        <div className="px-1.5 pb-1.5">
+          <div className="border rounded px-2 py-2 text-xs">
+            <div className="mb-2 font-medium opacity-80 flex items-center gap-2">
+              <SettingsIcon className="h-4 w-4" /> {t("proxy_and_cert")}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5">
+                <span className="min-w-[64px]">{t("proxy_addr")}:</span>
+                <input className="h-7 w-[200px] bg-transparent outline-none border rounded px-1" value={proxyAddr} onChange={(e) => setProxyAddr(e.target.value)} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                <span className="min-w-[64px]">{t("upstream")}:</span>
+                <input className="h-7 w-[260px] bg-transparent outline-none border rounded px-1" placeholder="http://user:pass@host:port" value={upstream} onChange={(e) => setUpstream(e.target.value)} />
+              </label>
+              <div className="flex items-center gap-1.5 ml-auto">
+                {caInstalled ? (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button size="sm" variant="ghost">{t("uninstall_ca")}</Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>{t("confirm_uninstall_title")}</AlertDialogTitle>
+                        <AlertDialogDescription>{t("confirm_uninstall_desc")}</AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+                        <AlertDialogAction onClick={doUninstallConfirmed}>{t("confirm")}</AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                ) : (
+                  <Button size="sm" variant="ghost" onClick={installOrUninstallCA}>{t("install_ca")}</Button>
+                )}
+                {!proxyRunning ? (
+                  <Button size="sm" onClick={startProxy}>{t("start_proxy")}</Button>
+                ) : (
+                  <Button size="sm" variant="secondary" onClick={stopProxy}>{t("stop_proxy")}</Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
         <ResizablePanel defaultSize={55} minSize={20}>
@@ -466,7 +630,7 @@ function App() {
       </ResizablePanelGroup>
       {contextMenu ? (
         <div
-          className="fixed z-[200] min-w-[160px] rounded-md border bg-popover text-popover-foreground shadow-md"
+          className="fixed z-[200] min-w-[160px] rounded md border bg-popover text-popover-foreground shadow-md"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -483,6 +647,17 @@ function App() {
           style={{ left: copyTip.x + 8, top: copyTip.y + 8 }}
         >
           {copyTip.text}
+        </div>
+      ) : null}
+      
+      {notices.length ? (
+        <div className="fixed z-[240] bottom-3 right-3 flex flex-col gap-2 max-w-[380px]">
+          {notices.map((n) => (
+            <Alert key={n.id} variant={n.variant} className="pointer-events-auto">
+              {n.title ? <AlertTitle>{n.title}</AlertTitle> : null}
+              {n.description ? <AlertDescription>{n.description}</AlertDescription> : null}
+            </Alert>
+          ))}
         </div>
       ) : null}
     </div>

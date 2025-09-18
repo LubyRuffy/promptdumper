@@ -1,4 +1,4 @@
-# promptdumper
+# PromptDumper
 
 LLM 提示词抓包工具，支持本地 Ollama 与 LM Studio 等模型对话的请求响应的解析和高亮显示。
 
@@ -16,6 +16,10 @@ LLM 提示词抓包工具，支持本地 Ollama 与 LM Studio 等模型对话的
 - 列表右键支持“复制为 curl/Copy as curl”，可复现请求（自动选择 http/https）
 - 跨平台桌面应用
 - 多语言、多主题
+- 内置HTTP代理
+  - 支持HTTPS MITM
+  - 自动生成 Root CA (本地存储) 并安装 (手动/OS 依赖)
+  - 支持upstream上游代理
 
 ## 截图
 

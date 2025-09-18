@@ -5,7 +5,7 @@
       "provider_by_port": { "1234": "lmstudio", "11434": "openai" },
       "request": {
         "methods": ["POST"],
-        "path_regex": "^/v1/(chat/completions|completions)",
+        "path_regex": "^/v1/(chat/completions|completions|embeddings)",
         "headers": [
           { "name_regex": "^content-type$", "value_regex": "application/json" }
         ],
