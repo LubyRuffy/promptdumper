@@ -26,6 +26,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::http_shared::{Header, HttpRequestEvent, HttpResponseEvent, gen_id, now_rfc3339};
 use crate::llm_rules::load_llm_rules;
+use crate::process_lookup::try_lookup_process;
 
 static PROXY_RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -416,6 +417,12 @@ async fn handle_client(
                     req_evt.is_llm = true;
                     req_evt.llm_provider = Some(provider);
                 }
+                // 尝试按客户端源端口查询进程
+                let (pname, pid) = try_lookup_process(peer_port, false);
+                if pname.is_some() || pid.is_some() {
+                    req_evt.process_name = pname;
+                    req_evt.pid = pid;
+                }
                 let _ = app3.emit("onHttpRequest", req_evt.clone());
 
                 // Build upstream absolute URI
@@ -573,6 +580,12 @@ async fn handle_client(
                         is_llm: false,
                         llm_provider: None,
                     };
+                    // 回填进程名（服务端口在响应方向上更可靠）
+                    let (pname2, pid2) = try_lookup_process(peer_port, true);
+                    if pname2.is_some() || pid2.is_some() {
+                        head_evt.process_name = pname2;
+                        head_evt.pid = pid2;
+                    }
                     if req_evt.is_llm {
                         head_evt.is_llm = true;
                         head_evt.llm_provider = req_evt.llm_provider.clone();
@@ -616,6 +629,11 @@ async fn handle_client(
                                         is_llm: false,
                                         llm_provider: None,
                                     };
+                                    let (pname3, pid3) = try_lookup_process(peer_port, true);
+                                    if pname3.is_some() || pid3.is_some() {
+                                        chunk_evt.process_name = pname3;
+                                        chunk_evt.pid = pid3;
+                                    }
                                     if req_is_llm_spawn {
                                         chunk_evt.is_llm = true;
                                         chunk_evt.llm_provider = req_provider_spawn.clone();
@@ -692,6 +710,11 @@ async fn handle_client(
                         is_llm: false,
                         llm_provider: None,
                     };
+                    let (pname2, pid2) = try_lookup_process(peer_port, true);
+                    if pname2.is_some() || pid2.is_some() {
+                        head_evt.process_name = pname2;
+                        head_evt.pid = pid2;
+                    }
                     if let Some(provider) = llm3.match_response(&head_evt) {
                         head_evt.is_llm = true;
                         head_evt.llm_provider = Some(provider);
@@ -739,6 +762,11 @@ async fn handle_client(
                                             is_llm: false,
                                             llm_provider: None,
                                         };
+                                        let (pname3, pid3) = try_lookup_process(peer_port, true);
+                                        if pname3.is_some() || pid3.is_some() {
+                                            chunk_evt.process_name = pname3;
+                                            chunk_evt.pid = pid3;
+                                        }
                                         if req_is_llm_spawn {
                                             chunk_evt.is_llm = true;
                                             chunk_evt.llm_provider = req_provider_spawn.clone();
@@ -843,7 +871,7 @@ async fn handle_client(
         } else {
             &[]
         };
-        let req_evt = HttpRequestEvent {
+        let mut req_evt = HttpRequestEvent {
             id: gen_id(),
             timestamp: now_rfc3339(),
             src_ip: peer.ip().to_string(),
@@ -877,6 +905,12 @@ async fn handle_client(
                 .is_some(),
             llm_provider: None,
         };
+        // 为纯 HTTP 同样尝试回填源端口对应的进程
+        let (pname_http, pid_http) = try_lookup_process(peer.port(), false);
+        if pname_http.is_some() || pid_http.is_some() {
+            req_evt.process_name = pname_http;
+            req_evt.pid = pid_http;
+        }
         let _ = app.emit("onHttpRequest", req_evt.clone());
 
         // Build origin-form request for upstream (convert from absolute-form)
@@ -1002,7 +1036,7 @@ async fn handle_client(
                 first_chunk = false;
             } else {
                 // stream chunks as subsequent events
-                let chunk_evt = HttpResponseEvent {
+                let mut chunk_evt = HttpResponseEvent {
                     id: req_evt.id.clone(),
                     timestamp: now_rfc3339(),
                     src_ip: host.clone(),
@@ -1020,6 +1054,11 @@ async fn handle_client(
                     is_llm: false,
                     llm_provider: None,
                 };
+                let (pname3, pid3) = try_lookup_process(peer.port(), true);
+                if pname3.is_some() || pid3.is_some() {
+                    chunk_evt.process_name = pname3;
+                    chunk_evt.pid = pid3;
+                }
                 let _ = app.emit("onHttpResponse", chunk_evt);
             }
         }

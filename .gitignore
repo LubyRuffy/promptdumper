@@ -28,3 +28,4 @@ sdk/Lib/
 sdk/docs/
 sdk/Examples-pcap/
 sdk/Examples-remote/
+src-tauri/mitm-ca/

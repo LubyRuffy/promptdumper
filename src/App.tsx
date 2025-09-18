@@ -27,7 +27,7 @@ import HttpHeaders from "./components/HttpHeaders";
 import BodyPreview from "./components/BodyPreview";
 import MarkdownView from "./components/MarkdownView";
 import { getSyntaxStyle } from "./syntax";
-import { buildCurlFromRow, formatSize } from "./utils/http";
+import { buildCurlFromRow, formatSize, formatDuration } from "./utils/http";
 
 // Types moved to ./types/http
 
@@ -39,7 +39,7 @@ function App() {
   const selected = useMemo(() => rows.find((r) => r.id === selectedId), [rows, selectedId]);
   const [running, setRunning] = useState(false);
   const [respBodyMode, setRespBodyMode] = useState<"pretty" | "raw">("pretty");
-  const [respAgg, setRespAgg] = useState<Record<string, { ct: string; text: string; size: number }>>({});
+  const [respAgg, setRespAgg] = useState<Record<string, { ct: string; text: string; size: number; ts?: string; expected?: number; done?: boolean }>>({});
   const [showAll, setShowAll] = useState<boolean>(false);
   const [theme, setTheme] = useState<"system" | "light" | "dark">(() => (localStorage.getItem("theme") as any) || "system");
   const [lang, setLang] = useState<"zh" | "en">(() => (localStorage.getItem("lang") as any) || "zh");
@@ -79,6 +79,7 @@ function App() {
       request: "请求",
       response: "响应",
       time: "时间",
+      cost: "耗时",
       source: "源",
       destination: "目的",
       method: "方法",
@@ -121,6 +122,7 @@ function App() {
       request: "Request",
       response: "Response",
       time: "Time",
+      cost: "Cost",
       source: "Source",
       destination: "Destination",
       method: "Method",
@@ -191,6 +193,11 @@ function App() {
         let ct = data.headers.find((h) => h.name.toLowerCase() === "content-type")?.value || old[data.id]?.ct || "";
         let text = old[data.id]?.text || "";
         let size = old[data.id]?.size || 0;
+        let ts = data.timestamp || old[data.id]?.ts;
+        let expected = old[data.id]?.expected;
+        const clHeader = data.headers.find((h) => h.name.toLowerCase() === "content-length")?.value || "";
+        const clNum = parseInt(clHeader);
+        if (!Number.isNaN(clNum)) expected = clNum;
         try {
           if (data.body_base64) {
             const bytes = Uint8Array.from(atob(data.body_base64), (c) => c.charCodeAt(0));
@@ -199,7 +206,8 @@ function App() {
             size += bytes.length;
           }
         } catch {}
-        return { ...old, [data.id]: { ct, text, size } };
+        const done = typeof expected === "number" ? size >= expected : (expected === 0);
+        return { ...old, [data.id]: { ct, text, size, ts, expected, done } };
       });
       setRows((old) => {
         const nx = [...old];
@@ -314,6 +322,20 @@ function App() {
       try { return new TextEncoder().encode(agg.text).length; } catch { return agg.size || 0; }
     }
     return r.resp?.body_len ?? 0;
+  }
+
+  function costForRow(r: Row): number | null {
+    const reqTs = r.req?.timestamp ? Date.parse(r.req.timestamp) : null;
+    if (!reqTs) return null;
+    const agg = respAgg[r.id];
+    let endTs: number | null = null;
+    if (agg?.ts) {
+      endTs = Date.parse(agg.ts);
+    } else if (r.resp?.timestamp) {
+      endTs = Date.parse(r.resp.timestamp);
+    }
+    if (!endTs || endTs < reqTs) return null;
+    return endTs - reqTs;
   }
 
   // buildCurlFromRow moved to utils/http
@@ -483,6 +505,7 @@ function App() {
                 <th className="h-8 px-2 text-left align-middle text-[14px] font-medium">{t("status")}</th>
                 <th className="h-8 px-2 text-left align-middle text-[14px] font-medium">{t("path")}</th>
                 <th className="h-8 px-2 text-left align-middle text-[14px] font-medium">{t("length")}</th>
+                <th className="h-8 px-2 text-left align-middle text-[14px] font-medium">{t("cost")}</th>
                 <th className="h-8 px-2 text-left align-middle text-[14px] font-medium">{t("process")}</th>
               </tr>
             </thead>
@@ -517,6 +540,7 @@ function App() {
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.resp?.status_code ?? ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px] truncate max-w-[16rem]">{r.req?.path || ""}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.resp ? formatSize(respSizeForRow(r)) : ""}</td>
+                <td className="px-2 py-1.5 align-middle text-[12px]">{(() => { const v = costForRow(r); return v != null ? formatDuration(v) : ""; })()}</td>
                 <td className="px-2 py-1.5 align-middle text-[12px]">{r.req?.process_name || r.resp?.process_name}</td>
               </tr>
             ))}
