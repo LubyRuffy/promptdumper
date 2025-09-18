@@ -39,7 +39,7 @@ struct StartProxyCmdArgs {
 #[tauri::command]
 async fn start_proxy(app: tauri::AppHandle, args: StartProxyCmdArgs) -> Result<(), String> {
     let addr = args.addr.unwrap_or_else(|| "127.0.0.1:38080".into());
-    proxy::start_proxy(app, addr, args.upstream)
+    proxy::start_proxy::<tauri::Wry, _>(app, addr, args.upstream)
         .await
         .map_err(|e| e.to_string())
 }

@@ -7,8 +7,17 @@ static PROCESS_CACHE: Lazy<DashMap<u16, (Option<String>, Option<i32>, Instant)>>
 static PROCESS_LOOKUP_INFLIGHT: Lazy<DashMap<u16, ()>> = Lazy::new(|| DashMap::new());
 const PROCESS_CACHE_TTL: Duration = Duration::from_secs(10);
 
+// Debug switch for process lookup path
+static PROC_DEBUG: Lazy<bool> = Lazy::new(|| {
+    match std::env::var("PROCESS_LOOKUP_DEBUG") {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => false,
+    }
+});
+macro_rules! plog { ($($arg:tt)*) => {{ if *PROC_DEBUG { eprintln!($($arg)*); } }}; }
+
 #[cfg(target_os = "macos")]
-pub fn try_lookup_process(port: u16, _is_server_side: bool) -> (Option<String>, Option<i32>) {
+pub fn try_lookup_process(port: u16, is_server_side: bool) -> (Option<String>, Option<i32>) {
     if let Some(entry) = PROCESS_CACHE.get(&port) {
         let (name, pid, ts) = (&entry.0, &entry.1, &entry.2);
         if ts.elapsed() < PROCESS_CACHE_TTL {
@@ -62,24 +71,35 @@ pub fn try_lookup_process(port: u16, _is_server_side: bool) -> (Option<String>, 
             PROCESS_LOOKUP_INFLIGHT.remove(&port);
         });
     }
-    // 在首次触发后，进行一次短暂同步等待（最多 ~400ms）以便立即回填
-    // 这样短连接也能拿到进程名且不会长期阻塞抓包主循环
-    let soft_deadline = Instant::now() + Duration::from_millis(400);
-    loop {
+    // 等待策略：
+    // - 响应方向/流式路径(is_server_side=true)：不等待，避免阻塞 tokio 线程
+    // - 请求方向：最多等待可配置毫秒（默认 50ms），尽量在首次展示时带上进程名
+    let wait_ms: u64 = if is_server_side {
+        0
+    } else {
+        std::env::var("PROCESS_LOOKUP_WAIT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(50)
+    };
+    if wait_ms == 0 {
+        plog!("[proc] scheduled lookup for port {}, return immediately", port);
+        return (None, None);
+    }
+    let soft_deadline = Instant::now() + Duration::from_millis(wait_ms);
+    while Instant::now() < soft_deadline {
         if let Some(entry) = PROCESS_CACHE.get(&port) {
             let (name, pid, ts) = (&entry.0, &entry.1, &entry.2);
             if ts.elapsed() < PROCESS_CACHE_TTL {
+                plog!("[proc] cache hit after wait: port={} name={:?} pid={:?}", port, name, pid);
                 return (name.clone(), *pid);
             } else {
-                // 缓存过期则丢弃并继续等待（极少出现）
                 PROCESS_CACHE.remove(&port);
             }
         }
-        if Instant::now() >= soft_deadline {
-            break;
-        }
         std::thread::sleep(Duration::from_millis(5));
     }
+    plog!("[proc] wait timeout for port {}", port);
     (None, None)
 }
 
