@@ -201,8 +201,9 @@ where
                 body_len: body_slice.len(),
                 process_name: None,
                 pid: None,
-                is_llm: false,
-                llm_provider: None,
+                // 继承请求的 LLM 标记，确保 UI 显示 raw/pretty/markdown 选项
+                is_llm: req_evt.is_llm,
+                llm_provider: req_evt.llm_provider.clone(),
             };
             let _ = app.emit("onHttpResponse", first_evt);
             first_chunk = false;
@@ -222,8 +223,9 @@ where
                 body_len: m,
                 process_name: None,
                 pid: None,
-                is_llm: false,
-                llm_provider: None,
+                // 同样继承请求的 LLM 标记
+                is_llm: req_evt.is_llm,
+                llm_provider: req_evt.llm_provider.clone(),
             };
             let (pname3, pid3) = try_lookup_process(peer.port(), true);
             if pname3.is_some() || pid3.is_some() { chunk_evt.process_name = pname3; chunk_evt.pid = pid3; }
