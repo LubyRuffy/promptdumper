@@ -1,7 +1,9 @@
+use base64::Engine as _;
+use base64::engine::general_purpose;
 use once_cell::sync::Lazy;
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
-    ExtendedKeyUsagePurpose, KeyUsagePurpose,
+    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
 };
 use regex::Regex;
 use std::collections::HashSet;
@@ -10,8 +12,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use time::{Duration, OffsetDateTime};
-use base64::Engine as _;
-use base64::engine::general_purpose;
 use uuid::Uuid;
 
 static CA_DIR: Lazy<PathBuf> = Lazy::new(|| {
@@ -256,9 +256,13 @@ pub fn generate_leaf_cert_for_host(
 pub fn pem_to_der_first_cert(pem: &str) -> Result<Vec<u8>, String> {
     let begin = "-----BEGIN CERTIFICATE-----";
     let end = "-----END CERTIFICATE-----";
-    let bpos = pem.find(begin).ok_or_else(|| "invalid pem: missing begin".to_string())?;
+    let bpos = pem
+        .find(begin)
+        .ok_or_else(|| "invalid pem: missing begin".to_string())?;
     let rest = &pem[bpos + begin.len()..];
-    let epos_rel = rest.find(end).ok_or_else(|| "invalid pem: missing end".to_string())?;
+    let epos_rel = rest
+        .find(end)
+        .ok_or_else(|| "invalid pem: missing end".to_string())?;
     let b64 = rest[..epos_rel]
         .lines()
         .map(|l| l.trim())
@@ -347,7 +351,11 @@ pub fn uninstall_ca_from_system_trust() -> Result<(), String> {
         "do shell script \"{}\" with administrator privileges",
         rm_cmd.replace("\\", "\\\\").replace("\"", "\\\"")
     );
-    if let Ok(out) = Command::new("/usr/bin/osascript").arg("-e").arg(&osa_script).output() {
+    if let Ok(out) = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(&osa_script)
+        .output()
+    {
         let combined = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),

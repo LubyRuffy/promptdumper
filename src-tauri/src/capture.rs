@@ -6,11 +6,11 @@ use std::thread::yield_now;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::process_lookup::try_lookup_process;
 use base64::{Engine as _, engine::general_purpose};
 use dashmap::DashMap;
 use etherparse::{InternetSlice, SlicedPacket, TransportSlice};
 use once_cell::sync::Lazy;
-use crate::process_lookup::try_lookup_process;
 use pcap::Error as PcapError;
 use pcap::{Active, Capture, Device, Linktype};
 use rand::{Rng, distributions::Alphanumeric};
@@ -794,7 +794,9 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                     parse_http_request(&state.req_buf)
                                 {
                                     // Prefer cached client process info on the connection
-                                    if state.client_process_name.is_none() && state.client_pid.is_none() {
+                                    if state.client_process_name.is_none()
+                                        && state.client_pid.is_none()
+                                    {
                                         let (pname0, pid0) = try_lookup_process(src_port, false);
                                         state.client_process_name = pname0;
                                         state.client_pid = pid0;
@@ -844,7 +846,9 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                         continue;
                                     }
                                     // Response direction prefers server side; but reuse cached
-                                    let (pname, pid) = if state.client_process_name.is_some() || state.client_pid.is_some() {
+                                    let (pname, pid) = if state.client_process_name.is_some()
+                                        || state.client_pid.is_some()
+                                    {
                                         (state.client_process_name.clone(), state.client_pid)
                                     } else {
                                         try_lookup_process(dst_port, true)
@@ -950,7 +954,9 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                         evt = enrich_resp_with_endpoints(
                                             evt, &src_ip, src_port, &dst_ip, dst_port,
                                         );
-                                        let (pname, pid) = if state.client_process_name.is_some() || state.client_pid.is_some() {
+                                        let (pname, pid) = if state.client_process_name.is_some()
+                                            || state.client_pid.is_some()
+                                        {
                                             (state.client_process_name.clone(), state.client_pid)
                                         } else {
                                             try_lookup_process(dst_port, true)
@@ -1014,7 +1020,9 @@ pub fn start_capture(app: tauri::AppHandle, iface: &str) -> Result<(), CaptureEr
                                         evt = enrich_resp_with_endpoints(
                                             evt, &src_ip, src_port, &dst_ip, dst_port,
                                         );
-                                        let (pname, pid) = if state.client_process_name.is_some() || state.client_pid.is_some() {
+                                        let (pname, pid) = if state.client_process_name.is_some()
+                                            || state.client_pid.is_some()
+                                        {
                                             (state.client_process_name.clone(), state.client_pid)
                                         } else {
                                             try_lookup_process(dst_port, true)
