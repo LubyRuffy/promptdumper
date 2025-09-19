@@ -77,7 +77,8 @@ impl PlainHttpRequest {
             dst_ip: self.host.clone(),
             dst_port: self.port,
             method: self.method.clone(),
-            path: self.full_path.clone(),
+            // use origin-form path for rule matching and UI consistency
+            path: self.origin_form_path(),
             version: self.version.clone(),
             headers: self.headers.clone(),
             body_base64: if self.body.is_empty() { None } else { Some(general_purpose::STANDARD.encode(&self.body)) },
