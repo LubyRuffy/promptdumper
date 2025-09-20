@@ -1,17 +1,17 @@
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 
 use crate::llm_rules::load_llm_rules;
 
-mod parse;
-mod upstream;
-mod tls;
-mod mitm_service;
-mod mitm_handlers;
-mod mitm_session;
 mod flows;
+mod mitm_handlers;
+mod mitm_service;
+mod mitm_session;
+mod parse;
+mod tls;
+mod upstream;
 
 #[cfg(test)]
 mod tests;
@@ -84,11 +84,7 @@ pub(crate) fn current_upstream_proxy() -> Option<String> {
 // (StartProxyArgs removed; not used within this module)
 
 // Public API
-pub async fn start_proxy<R, E>(
-    app: E,
-    addr: String,
-    upstream: Option<String>,
-) -> Result<(), String>
+pub async fn start_proxy<R, E>(app: E, addr: String, upstream: Option<String>) -> Result<(), String>
 where
     R: tauri::Runtime,
     E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
@@ -121,8 +117,13 @@ where
                     let app_handle = app.clone();
                     let llm_rules_cloned = llm_rules.clone();
                     tokio::spawn(async move {
-                        if let Err(_e) =
-                            flows::handle_client::<R, E>(&app_handle, &llm_rules_cloned, &mut inbound, peer).await
+                        if let Err(_e) = flows::handle_client::<R, E>(
+                            &app_handle,
+                            &llm_rules_cloned,
+                            &mut inbound,
+                            peer,
+                        )
+                        .await
                         {
                             // swallow errors
                         }
@@ -144,16 +145,14 @@ pub fn stop_proxy() {
 
 // Expose commonly used items to submodules via crate::proxy path
 pub(crate) use parse::{
-    build_plain_http_forward, looks_like_http, parse_connect_target, parse_plain_http_request, ConnectTarget,
-    InitialPacket, PlainHttpRequest,
+    ConnectTarget, InitialPacket, PlainHttpRequest, build_plain_http_forward, looks_like_http,
+    parse_connect_target, parse_plain_http_request,
 };
 pub(crate) use tls::{build_https_client, build_mitm_acceptor, resolve_mitm_flags};
 pub(crate) use upstream::{connect_via_upstream, read_http_response_head, tunnel_with_eager_close};
 // only re-export the symbols actually referenced across modules to avoid unused warnings
-pub(crate) use mitm_service::handle_mitm_request;
 pub(crate) use mitm_handlers::{handle_direct_upstream, handle_via_upstream_proxy};
+pub(crate) use mitm_service::handle_mitm_request;
 pub(crate) use mitm_session::run_mitm_session;
 // don't re-export handle_client here to avoid unused import warnings in other modules
 // modules needing it can path-reference flows::handle_client directly
-
-

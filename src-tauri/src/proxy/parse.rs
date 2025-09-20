@@ -2,8 +2,8 @@ use memchr::{memchr, memmem};
 use std::net::SocketAddr;
 
 use crate::http_shared::{Header, HttpRequestEvent, gen_id, now_rfc3339};
-use base64::engine::general_purpose;
 use base64::Engine as _;
+use base64::engine::general_purpose;
 
 #[derive(Debug, Clone)]
 pub(crate) struct InitialPacket {
@@ -18,17 +18,29 @@ impl InitialPacket {
         let head_end = memmem::find(&data, b"\r\n\r\n").unwrap_or(len);
         let first_line_end = memchr(b'\n', &data).unwrap_or(len);
         let first_line = String::from_utf8_lossy(&data[..first_line_end]).into_owned();
-        Self { data, head_end, first_line }
+        Self {
+            data,
+            head_end,
+            first_line,
+        }
     }
 
-    pub(crate) fn len(&self) -> usize { self.data.len() }
-    pub(crate) fn first_line(&self) -> &str { &self.first_line }
+    pub(crate) fn len(&self) -> usize {
+        self.data.len()
+    }
+    pub(crate) fn first_line(&self) -> &str {
+        &self.first_line
+    }
     pub(crate) fn head_bytes(&self) -> &[u8] {
         let end = self.head_end.min(self.data.len());
         &self.data[..end]
     }
     pub(crate) fn body_bytes(&self) -> &[u8] {
-        if self.head_end + 4 <= self.data.len() { &self.data[self.head_end + 4..] } else { &[] }
+        if self.head_end + 4 <= self.data.len() {
+            &self.data[self.head_end + 4..]
+        } else {
+            &[]
+        }
     }
 }
 
@@ -81,7 +93,11 @@ impl PlainHttpRequest {
             path: self.origin_form_path(),
             version: self.version.clone(),
             headers: self.headers.clone(),
-            body_base64: if self.body.is_empty() { None } else { Some(general_purpose::STANDARD.encode(&self.body)) },
+            body_base64: if self.body.is_empty() {
+                None
+            } else {
+                Some(general_purpose::STANDARD.encode(&self.body))
+            },
             body_len: self.body.len(),
             process_name: None,
             pid: None,
@@ -103,7 +119,9 @@ pub(crate) fn looks_like_http(first_line: &str) -> bool {
         if token.eq_ignore_ascii_case("CONNECT") {
             return true;
         }
-        const METHODS: &[&str] = &["GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "PATCH"];
+        const METHODS: &[&str] = &[
+            "GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "PATCH",
+        ];
         METHODS.iter().any(|m| token.eq_ignore_ascii_case(m))
     } else {
         false
@@ -112,7 +130,9 @@ pub(crate) fn looks_like_http(first_line: &str) -> bool {
 
 pub(crate) fn parse_connect_target(first_line: &str) -> Option<ConnectTarget> {
     let mut parts = first_line.split_whitespace();
-    if !parts.next()?.eq_ignore_ascii_case("CONNECT") { return None; }
+    if !parts.next()?.eq_ignore_ascii_case("CONNECT") {
+        return None;
+    }
     let host_port = parts.next()?;
     let mut hp = host_port.split(':');
     let host = hp.next().unwrap_or("").to_string();
@@ -122,37 +142,67 @@ pub(crate) fn parse_connect_target(first_line: &str) -> Option<ConnectTarget> {
 
 pub(crate) fn parse_plain_http_request(packet: &InitialPacket) -> Result<PlainHttpRequest, String> {
     let mut headers = Vec::<Header>::new();
-    for line in String::from_utf8_lossy(packet.head_bytes()).split("\r\n").skip(1) {
-        if line.is_empty() { break; }
+    for line in String::from_utf8_lossy(packet.head_bytes())
+        .split("\r\n")
+        .skip(1)
+    {
+        if line.is_empty() {
+            break;
+        }
         if let Some((name, value)) = line.split_once(':') {
-            headers.push(Header { name: name.trim().to_string(), value: value.trim().to_string() });
+            headers.push(Header {
+                name: name.trim().to_string(),
+                value: value.trim().to_string(),
+            });
         }
     }
 
     let mut rl = packet.first_line().split_whitespace();
     let method = rl.next().unwrap_or("").to_string();
     let full_path = rl.next().unwrap_or("").to_string();
-    let version = rl.next().unwrap_or("HTTP/1.1").trim_start_matches("HTTP/").to_string();
+    let version = rl
+        .next()
+        .unwrap_or("HTTP/1.1")
+        .trim_start_matches("HTTP/")
+        .to_string();
 
-    let host_header = headers.iter().find(|h| h.name.eq_ignore_ascii_case("host")).map(|h| h.value.clone()).unwrap_or_default();
+    let host_header = headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("host"))
+        .map(|h| h.value.clone())
+        .unwrap_or_default();
     let (host, port) = if let Some((h, p)) = host_header.split_once(':') {
         (h.to_string(), p.parse::<u16>().unwrap_or(80))
-    } else { (host_header, 80) };
+    } else {
+        (host_header, 80)
+    };
 
-    Ok(PlainHttpRequest { method, full_path, version, headers, host, port, body: packet.body_bytes().to_vec() })
+    Ok(PlainHttpRequest {
+        method,
+        full_path,
+        version,
+        headers,
+        host,
+        port,
+        body: packet.body_bytes().to_vec(),
+    })
 }
 
 pub(crate) fn build_plain_http_forward(req: &PlainHttpRequest) -> Vec<u8> {
     let mut forward = Vec::<u8>::new();
-    forward.extend_from_slice(format!("{} {} HTTP/1.1\r\n", req.method, req.origin_form_path()).as_bytes());
+    forward.extend_from_slice(
+        format!("{} {} HTTP/1.1\r\n", req.method, req.origin_form_path()).as_bytes(),
+    );
     for header in req.headers.iter() {
         let lname = header.name.to_ascii_lowercase();
-        if lname == "proxy-connection" || lname == "proxy-authorization" { continue; }
+        if lname == "proxy-connection" || lname == "proxy-authorization" {
+            continue;
+        }
         forward.extend_from_slice(format!("{}: {}\r\n", header.name, header.value).as_bytes());
     }
     forward.extend_from_slice(b"Connection: close\r\n\r\n");
-    if !req.body.is_empty() { forward.extend_from_slice(&req.body); }
+    if !req.body.is_empty() {
+        forward.extend_from_slice(&req.body);
+    }
     forward
 }
-
-

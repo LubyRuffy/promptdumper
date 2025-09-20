@@ -1,13 +1,13 @@
-use base64::engine::general_purpose;
 use base64::Engine as _;
+use base64::engine::general_purpose;
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue};
 use http_body::Frame;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::Incoming as IncomingBody;
 use hyper::{Request, Response};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
 // use hyper_util::rt::TokioExecutor;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -36,12 +36,27 @@ pub(crate) struct MitmRequestContext<E> {
 }
 
 impl<E> MitmRequestContext<E> {
-    pub(crate) fn touch_activity(&self) { self.last_activity.store(now_millis(), std::sync::atomic::Ordering::Relaxed); }
+    pub(crate) fn touch_activity(&self) {
+        self.last_activity
+            .store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
-pub(crate) struct InflightGuard { counter: std::sync::Arc<std::sync::atomic::AtomicUsize> }
-impl InflightGuard { pub(crate) fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self { counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed); Self { counter } } }
-impl Drop for InflightGuard { fn drop(&mut self) { self.counter.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); } }
+pub(crate) struct InflightGuard {
+    counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl InflightGuard {
+    pub(crate) fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { counter }
+    }
+}
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 pub(crate) struct MitmShared<E> {
     pub(crate) app: E,
@@ -72,15 +87,32 @@ pub(crate) async fn parse_client_request<E>(
 ) -> Result<ParsedClientRequest, hyper::Error> {
     let mut headers_vec = Vec::<Header>::new();
     for (name, value) in parts.headers.iter() {
-        headers_vec.push(Header { name: name.as_str().to_string(), value: value.to_str().unwrap_or("").to_string() });
+        headers_vec.push(Header {
+            name: name.as_str().to_string(),
+            value: value.to_str().unwrap_or("").to_string(),
+        });
     }
-    if !headers_vec.iter().any(|h| h.name.eq_ignore_ascii_case("host")) {
-        headers_vec.push(Header { name: "host".into(), value: shared.host.clone() });
+    if !headers_vec
+        .iter()
+        .any(|h| h.name.eq_ignore_ascii_case("host"))
+    {
+        headers_vec.push(Header {
+            name: "host".into(),
+            value: shared.host.clone(),
+        });
     }
 
     let method_str = parts.method.as_str().to_string();
-    let path_q = parts.uri.path_and_query().map(|x| x.as_str().to_string()).unwrap_or("/".to_string());
-    let host_header = headers_vec.iter().find(|h| h.name.eq_ignore_ascii_case("host")).map(|h| h.value.clone()).unwrap_or(shared.host.clone());
+    let path_q = parts
+        .uri
+        .path_and_query()
+        .map(|x| x.as_str().to_string())
+        .unwrap_or("/".to_string());
+    let host_header = headers_vec
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("host"))
+        .map(|h| h.value.clone())
+        .unwrap_or(shared.host.clone());
 
     // 读取请求体，并在等待过程中输出心跳日志，便于定位卡在 body 的问题
     let expected_len = headers_vec
@@ -90,7 +122,10 @@ pub(crate) async fn parse_client_request<E>(
     let started_wait = std::time::Instant::now();
     proxy_log!(
         "[proxy][conn={}] begin collect body: {} {} expected={:?}",
-        shared.conn_id, method_str, path_q, expected_len
+        shared.conn_id,
+        method_str,
+        path_q,
+        expected_len
     );
     let collect_fut = body_in.collect();
     tokio::pin!(collect_fut);
@@ -122,7 +157,12 @@ pub(crate) async fn parse_client_request<E>(
             }
         }
     };
-    proxy_log!("[proxy][conn={}] build req_event begin: {} {}", shared.conn_id, method_str, path_q);
+    proxy_log!(
+        "[proxy][conn={}] build req_event begin: {} {}",
+        shared.conn_id,
+        method_str,
+        path_q
+    );
     let id = gen_id();
     let mut req_evt = HttpRequestEvent {
         id: id.clone(),
@@ -135,36 +175,89 @@ pub(crate) async fn parse_client_request<E>(
         path: path_q.clone(),
         version: crate::proxy::http_version_label(parts.version).into(),
         headers: headers_vec.clone(),
-        body_base64: if body_bytes.is_empty() { None } else { Some(general_purpose::STANDARD.encode(&body_bytes)) },
+        body_base64: if body_bytes.is_empty() {
+            None
+        } else {
+            Some(general_purpose::STANDARD.encode(&body_bytes))
+        },
         body_len: body_bytes.len(),
         process_name: None,
         pid: None,
         is_llm: false,
         llm_provider: None,
     };
-    proxy_log!("[proxy][conn={}] build req_event done: {} {}", shared.conn_id, method_str, path_q);
-    proxy_log!("[proxy][conn={}] llm match begin: {} {}", shared.conn_id, method_str, path_q);
+    proxy_log!(
+        "[proxy][conn={}] build req_event done: {} {}",
+        shared.conn_id,
+        method_str,
+        path_q
+    );
+    proxy_log!(
+        "[proxy][conn={}] llm match begin: {} {}",
+        shared.conn_id,
+        method_str,
+        path_q
+    );
     if let Some(provider) = shared.llm_rules.match_request(&req_evt) {
         req_evt.is_llm = true;
         req_evt.llm_provider = Some(provider);
     }
-    proxy_log!("[proxy][conn={}] llm match done: {} {}", shared.conn_id, method_str, path_q);
-    proxy_log!("[proxy][conn={}] proc lookup begin: port={} {} {}", shared.conn_id, shared.peer.port(), method_str, path_q);
+    proxy_log!(
+        "[proxy][conn={}] llm match done: {} {}",
+        shared.conn_id,
+        method_str,
+        path_q
+    );
+    proxy_log!(
+        "[proxy][conn={}] proc lookup begin: port={} {} {}",
+        shared.conn_id,
+        shared.peer.port(),
+        method_str,
+        path_q
+    );
     let (pname, pid) = try_lookup_process(shared.peer.port(), false);
-    if pname.is_some() || pid.is_some() { req_evt.process_name = pname; req_evt.pid = pid; }
-    proxy_log!("[proxy][conn={}] proc lookup done: {} {}", shared.conn_id, method_str, path_q);
+    if pname.is_some() || pid.is_some() {
+        req_evt.process_name = pname;
+        req_evt.pid = pid;
+    }
+    proxy_log!(
+        "[proxy][conn={}] proc lookup done: {} {}",
+        shared.conn_id,
+        method_str,
+        path_q
+    );
 
-    proxy_log!("[proxy][conn={}] parse_client_request returning: {} {}", shared.conn_id, method_str, path_q);
-    Ok(ParsedClientRequest { id, method: method_str, path: path_q.clone(), headers: headers_vec, body: body_bytes, uri: format!("https://{}{}", host_header, path_q), host_header, req_event: req_evt })
+    proxy_log!(
+        "[proxy][conn={}] parse_client_request returning: {} {}",
+        shared.conn_id,
+        method_str,
+        path_q
+    );
+    Ok(ParsedClientRequest {
+        id,
+        method: method_str,
+        path: path_q.clone(),
+        headers: headers_vec,
+        body: body_bytes,
+        uri: format!("https://{}{}", host_header, path_q),
+        host_header,
+        req_event: req_evt,
+    })
 }
 
 pub(crate) fn emit_request_event<R, E>(
     app: &E,
     event: &HttpRequestEvent,
     last_activity: &std::sync::Arc<std::sync::atomic::AtomicU64>,
-) where R: tauri::Runtime, E: tauri::Emitter<R> + Clone + Send + Sync + 'static {
+) where
+    R: tauri::Runtime,
+    E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
+{
     // 先更新活动时间，避免事件通道阻塞导致 idle 判定提前触发
-    last_activity.store(crate::proxy::now_millis(), std::sync::atomic::Ordering::Relaxed);
+    last_activity.store(
+        crate::proxy::now_millis(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let app_clone = app.clone();
     let ev = event.clone();
     tokio::spawn(async move {
@@ -172,12 +265,34 @@ pub(crate) fn emit_request_event<R, E>(
     });
 }
 
-pub(crate) fn build_outgoing_request(parsed: &ParsedClientRequest) -> Result<Request<ProxyBody>, http::Error> {
-    let mut out_req = Request::builder().method(parsed.method.as_str()).uri(parsed.uri.as_str()).body(http_body_util::Full::new(parsed.body.clone()))?;
+pub(crate) fn build_outgoing_request(
+    parsed: &ParsedClientRequest,
+) -> Result<Request<ProxyBody>, http::Error> {
+    let mut out_req = Request::builder()
+        .method(parsed.method.as_str())
+        .uri(parsed.uri.as_str())
+        .body(http_body_util::Full::new(parsed.body.clone()))?;
     for h in parsed.headers.iter() {
         let lname = h.name.to_ascii_lowercase();
-        if matches!(lname.as_str(), "connection" | "proxy-connection" | "proxy-authorization" | "keep-alive" | "upgrade" | "te" | "trailers" | "host" | "content-length" | "transfer-encoding") { continue; }
-        if let (Ok(name), Ok(val)) = (h.name.parse::<HeaderName>(), h.value.parse::<HeaderValue>()) { out_req.headers_mut().append(name, val); }
+        if matches!(
+            lname.as_str(),
+            "connection"
+                | "proxy-connection"
+                | "proxy-authorization"
+                | "keep-alive"
+                | "upgrade"
+                | "te"
+                | "trailers"
+                | "host"
+                | "content-length"
+                | "transfer-encoding"
+        ) {
+            continue;
+        }
+        if let (Ok(name), Ok(val)) = (h.name.parse::<HeaderName>(), h.value.parse::<HeaderValue>())
+        {
+            out_req.headers_mut().append(name, val);
+        }
     }
     Ok(out_req)
 }
@@ -229,15 +344,38 @@ where
     E: tauri::Emitter<R> + Clone + Send + Sync + 'static,
 {
     let shared = {
-        let MitmRequestContext { app, llm_rules, client, peer, host, port, conn_id, last_activity, inflight: _ } = ctx;
-        MitmShared { app, llm_rules, client, peer, host, port, conn_id, last_activity }
+        let MitmRequestContext {
+            app,
+            llm_rules,
+            client,
+            peer,
+            host,
+            port,
+            conn_id,
+            last_activity,
+            inflight: _,
+        } = ctx;
+        MitmShared {
+            app,
+            llm_rules,
+            client,
+            peer,
+            host,
+            port,
+            conn_id,
+            last_activity,
+        }
     };
 
     let (parts, body_in) = req.into_parts();
     // 先输出仅基于头部的预日志，避免因等待请求体导致“未见日志”的误判
     {
         let method_str = parts.method.as_str().to_string();
-        let path_q = parts.uri.path_and_query().map(|x| x.as_str().to_string()).unwrap_or("/".to_string());
+        let path_q = parts
+            .uri
+            .path_and_query()
+            .map(|x| x.as_str().to_string())
+            .unwrap_or("/".to_string());
         let headers_cnt = parts.headers.len();
         let headers_preview: String = parts
             .headers
@@ -245,7 +383,12 @@ where
             .map(|(name, value)| {
                 let lname = name.as_str().to_ascii_lowercase();
                 let mut v = value.to_str().unwrap_or("").to_string();
-                if matches!(lname.as_str(), "authorization" | "proxy-authorization" | "cookie" | "set-cookie") { v = "***".to_string(); }
+                if matches!(
+                    lname.as_str(),
+                    "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+                ) {
+                    v = "***".to_string();
+                }
                 format!("{}: {}", name.as_str(), v)
             })
             .take(20)
@@ -271,7 +414,10 @@ where
             .map(|h| {
                 let lname = h.name.to_ascii_lowercase();
                 let mut v = h.value.clone();
-                if matches!(lname.as_str(), "authorization" | "proxy-authorization" | "cookie" | "set-cookie") {
+                if matches!(
+                    lname.as_str(),
+                    "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+                ) {
                     v = "***".to_string();
                 }
                 format!("{}: {}", h.name, v)
@@ -296,11 +442,14 @@ where
     emit_request_event::<R, _>(&shared.app, &parsed.req_event, &shared.last_activity);
 
     if let Some(proxy_url) = current_upstream_proxy() {
-        proxy_log!("[proxy] using upstream {} for {}:{}", proxy_url, shared.host, shared.port);
+        proxy_log!(
+            "[proxy] using upstream {} for {}:{}",
+            proxy_url,
+            shared.host,
+            shared.port
+        );
         crate::proxy::handle_via_upstream_proxy::<R, _>(&shared, parsed, proxy_url).await
     } else {
         crate::proxy::handle_direct_upstream::<R, _>(&shared, parsed).await
     }
 }
-
-

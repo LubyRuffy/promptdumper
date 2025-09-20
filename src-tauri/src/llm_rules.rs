@@ -66,57 +66,7 @@ pub struct LlmRules {
     rules: Vec<LlmRuleCompiled>,
 }
 
-const DEFAULT_LLM_RULES_JSON: &str = r#"{
-  "rules": [
-    {
-      "provider": "openai_compatible",
-      "provider_by_port": { "1234": "lmstudio", "11434": "ollama" },
-      "request": {
-        "methods": ["POST"],
-        "path_regex": "^/v1/(chat/completions|completions)",
-        "body_contains_any": ["\"model\"", "\"messages\"", "\"prompt\""]
-      },
-      "response": {
-        "body_contains_any": ["\"choices\""]
-      }
-    },
-    {
-      "provider": "ollama",
-      "request": {
-        "methods": ["POST"],
-        "path_regex": "^/api/(generate|chat)"
-      },
-      "response": {
-        "body_contains_any": ["\"response\"", "\"message\"", "\"model\"", "\"choices\""]
-      }
-    },
-    {
-      "provider": "cherry-studio",
-      "request": {
-        "methods": ["POST"],
-        "path_regex": "^/chat/completions$",
-        "headers": [
-          { "name_regex": "(?i)^(host|:authority)$", "value_regex": "^api\\.cherry-ai\\.com(:\\d+)?$" }
-        ],
-        "body_contains_any": ["\"model\""]
-      },
-      "response": {
-        "body_contains_any": ["\"choices\""]
-      }
-    },
-    {
-      "provider": "cherry-studio",
-      "request": {
-        "methods": ["POST"],
-        "path_regex": "^/chat/completions$",
-        "body_contains_any": ["\"model\""]
-      },
-      "response": {
-        "body_contains_any": ["\"choices\""]
-      }
-    }
-  ]
-}"#;
+const DEFAULT_LLM_RULES_JSON: &str = include_str!("../../llm_rules.json");
 
 fn compile_header_rule(r: &RawHeaderRule) -> Option<HeaderRuleCompiled> {
     let name = match &r.name_regex {

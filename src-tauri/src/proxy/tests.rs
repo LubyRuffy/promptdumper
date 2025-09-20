@@ -31,5 +31,3 @@ fn test_parse_plain_http_request() {
     assert_eq!(req.body, b"body");
     assert_eq!(req.origin_form_path(), "/index.html");
 }
-
-
